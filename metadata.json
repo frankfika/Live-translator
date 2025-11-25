@@ -1,0 +1,7 @@
+{
+  "name": "同声传译-实时字幕",
+  "description": "Real-time AI subtitles and simultaneous interpretation using Gemini Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
