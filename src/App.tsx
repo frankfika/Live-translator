@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ConnectionStatus, SubtitleMessage } from './types';
-import { LiveClient } from './services/liveClient';
-import AudioVisualizer from './components/AudioVisualizer';
-import SubtitleCard from './components/SubtitleCard';
-import LanguageSettings from './components/LanguageSettings';
+import { ConnectionStatus, SubtitleMessage } from '@/types';
+import { LiveClient } from '@/services/liveClient';
+import AudioVisualizer from '@/components/AudioVisualizer';
+import SubtitleCard from '@/components/SubtitleCard';
+import LanguageSettings from '@/components/LanguageSettings';
 
-const API_KEY = process.env.API_KEY || '';
+const API_KEY = process.env.GEMINI_API_KEY || '';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.DISCONNECTED);
@@ -42,14 +42,7 @@ const App: React.FC = () => {
 
     // Construct the system instruction based on selected languages
     const systemInstruction = `
-    You are a professional, real-time simultaneous interpreter.
-    Your task is to facilitate a bilingual conversation between ${langA} and ${langB}.
-    1. Listen carefully to the input audio.
-    2. If the input is in ${langA}, translate it into ${langB}.
-    3. If the input is in ${langB}, translate it into ${langA}.
-    4. Speak the translation naturally.
-    5. Keep your translations concise and accurate.
-    Do not engage in small talk. Just translate.
+    你是一名专业同声传译。请将语音转写为文本，并在两种语言之间互译：如果输入是${langA}，则译为${langB}；如果输入是${langB}，则译为${langA}。仅输出严格JSON：{"transcript":"","translation":""}
     `;
 
     await client.connect(
