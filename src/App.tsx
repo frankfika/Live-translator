@@ -6,6 +6,37 @@ import SubtitleCard from '@/components/SubtitleCard';
 import LanguageSettings from '@/components/LanguageSettings';
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+const DAILY_LIMIT = 100;
+
+// 简单的本地限流
+function getRateLimit() {
+  const today = new Date().toISOString().split('T')[0];
+  const stored = localStorage.getItem('livetranslator_usage');
+
+  if (stored) {
+    const data = JSON.parse(stored);
+    if (data.date === today) {
+      return { used: data.count, remaining: DAILY_LIMIT - data.count };
+    }
+  }
+  return { used: 0, remaining: DAILY_LIMIT };
+}
+
+function incrementUsage() {
+  const today = new Date().toISOString().split('T')[0];
+  const stored = localStorage.getItem('livetranslator_usage');
+
+  let count = 1;
+  if (stored) {
+    const data = JSON.parse(stored);
+    if (data.date === today) {
+      count = data.count + 1;
+    }
+  }
+
+  localStorage.setItem('livetranslator_usage', JSON.stringify({ date: today, count }));
+  return DAILY_LIMIT - count;
+}
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.DISCONNECTED);
@@ -13,18 +44,19 @@ const App: React.FC = () => {
   const [currentOriginal, setCurrentOriginal] = useState('');
   const [currentTranslated, setCurrentTranslated] = useState('');
   const [stream, setStream] = useState<MediaStream | null>(null);
-  
+  const [remaining, setRemaining] = useState<number>(getRateLimit().remaining);
+
   // Language State
   const [langA, setLangA] = useState('English');
   const [langB, setLangB] = useState('Chinese');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  
+
   // Refs to hold streaming data to avoid stale closures in callbacks
   const currentOriginalRef = useRef('');
   const currentTranslatedRef = useRef('');
   const liveClientRef = useRef<LiveClient | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  
+
   // Auto-scroll to bottom
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -32,65 +64,82 @@ const App: React.FC = () => {
 
   const handleStart = async () => {
     if (!API_KEY) {
-      alert("Please provide a valid API KEY in the environment variables.");
+      alert("请配置 API Key");
       return;
     }
-    
+
+    // 检查限流
+    const { remaining: rem } = getRateLimit();
+    if (rem <= 0) {
+      alert(`今日使用次数已达上限 (${DAILY_LIMIT}次/天)，请明天再来！`);
+      return;
+    }
+
     setStatus(ConnectionStatus.CONNECTING);
-    const client = new LiveClient(API_KEY);
-    liveClientRef.current = client;
 
-    // Construct the system instruction based on selected languages
-    const systemInstruction = `你是一名专业同声传译。请在两种语言之间互译：如果输入是${langA}，则译为${langB}；如果输入是${langB}，则译为${langA}。直接输出翻译结果，不要添加任何解释。`;
+    try {
+      const client = new LiveClient(API_KEY);
+      liveClientRef.current = client;
 
-    await client.connect(
-      { systemInstruction }, 
-      {
-        onOpen: () => {
-          setStatus(ConnectionStatus.CONNECTED);
-          setStream(client.getStream());
-        },
-        onClose: () => {
-          setStatus(ConnectionStatus.DISCONNECTED);
-          setStream(null);
-          resetBuffers();
-        },
-        onError: (err) => {
-          console.error(err);
-          setStatus(ConnectionStatus.ERROR);
-          setStream(null);
-          resetBuffers();
-        },
-        onInputTranscription: (text) => {
-          currentOriginalRef.current += text;
-          setCurrentOriginal(currentOriginalRef.current);
-        },
-        onOutputTranscription: (text) => {
-          currentTranslatedRef.current += text;
-          setCurrentTranslated(currentTranslatedRef.current);
-        },
-        onTurnComplete: () => {
-          const originalText = currentOriginalRef.current;
-          const translatedText = currentTranslatedRef.current;
+      // Construct the system instruction based on selected languages
+      const systemInstruction = `你是一名专业同声传译。请在两种语言之间互译：如果输入是${langA}，则译为${langB}；如果输入是${langB}，则译为${langA}。直接输出翻译结果，不要添加任何解释。`;
 
-          if (originalText.trim() || translatedText.trim()) {
-            setMessages(prev => [
-              ...prev, 
-              {
-                id: Date.now().toString(),
-                original: originalText,
-                translated: translatedText,
-                isFinal: true,
-                timestamp: Date.now()
-              }
-            ]);
-          }
+      await client.connect(
+        { systemInstruction },
+        {
+          onOpen: () => {
+            setStatus(ConnectionStatus.CONNECTED);
+            setStream(client.getStream());
+            // 连接成功后扣减次数
+            const newRemaining = incrementUsage();
+            setRemaining(newRemaining);
+          },
+          onClose: () => {
+            setStatus(ConnectionStatus.DISCONNECTED);
+            setStream(null);
+            resetBuffers();
+          },
+          onError: (err) => {
+            console.error(err);
+            setStatus(ConnectionStatus.ERROR);
+            setStream(null);
+            resetBuffers();
+          },
+          onInputTranscription: (text) => {
+            currentOriginalRef.current += text;
+            setCurrentOriginal(currentOriginalRef.current);
+          },
+          onOutputTranscription: (text) => {
+            currentTranslatedRef.current += text;
+            setCurrentTranslated(currentTranslatedRef.current);
+          },
+          onTurnComplete: () => {
+            const originalText = currentOriginalRef.current;
+            const translatedText = currentTranslatedRef.current;
 
-          resetBuffers();
-        },
-        onAudioData: () => {} // Visualizer handles its own stream
-      }
-    );
+            if (originalText.trim() || translatedText.trim()) {
+              setMessages(prev => [
+                ...prev,
+                {
+                  id: Date.now().toString(),
+                  original: originalText,
+                  translated: translatedText,
+                  isFinal: true,
+                  timestamp: Date.now()
+                }
+              ]);
+            }
+
+            resetBuffers();
+          },
+          onAudioData: () => {} // Visualizer handles its own stream
+        }
+      );
+    } catch (err) {
+      console.error('Failed to start:', err);
+      alert('连接失败，请重试');
+      setStatus(ConnectionStatus.DISCONNECTED);
+    }
   };
 
   const resetBuffers = () => {
@@ -113,25 +162,28 @@ const App: React.FC = () => {
     setMessages([]);
     resetBuffers();
   };
-  
+
   return (
     <div className="relative min-h-screen bg-gray-950 flex flex-col items-center">
-      
+
       {/* Top Bar / Controls */}
       <div className="fixed top-0 left-0 right-0 z-50 p-4 flex justify-between items-center glass-panel border-b border-gray-800">
         <div className="flex items-center gap-3">
             <div className={`w-3 h-3 rounded-full ${status === ConnectionStatus.CONNECTED ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
             <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500 hidden sm:block">
-                Gemini Live Subtitles
+                LiveTranslator
             </h1>
             <h1 className="text-xl font-bold text-white sm:hidden">
-                Live Subtitles
+                LiveTranslator
             </h1>
+            <span className="text-xs text-gray-400 ml-2">
+              今日剩余 {remaining}/{DAILY_LIMIT}
+            </span>
         </div>
-        
+
         <div className="flex items-center gap-2 sm:gap-4">
              {/* Settings Button */}
-             <button 
+             <button
                 onClick={() => setIsSettingsOpen(true)}
                 disabled={status === ConnectionStatus.CONNECTED || status === ConnectionStatus.CONNECTING}
                 className="p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-800 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
@@ -141,7 +193,7 @@ const App: React.FC = () => {
              </button>
 
              {/* Reset/Clear Button */}
-             <button 
+             <button
                 onClick={handleReset}
                 className="p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-800 transition-all"
                 title="Clear History"
@@ -152,14 +204,14 @@ const App: React.FC = () => {
              <div className="h-6 w-px bg-gray-700 mx-1"></div>
 
              {status === ConnectionStatus.CONNECTED ? (
-                 <button 
+                 <button
                     onClick={handleStop}
                     className="px-6 py-2 rounded-full bg-red-600 hover:bg-red-700 text-white font-semibold transition-all shadow-lg hover:shadow-red-900/50"
                  >
                     Stop
                  </button>
              ) : (
-                 <button 
+                 <button
                     onClick={handleStart}
                     disabled={status === ConnectionStatus.CONNECTING}
                     className="px-6 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-semibold transition-all shadow-lg hover:shadow-blue-900/50 disabled:opacity-50"
@@ -172,7 +224,7 @@ const App: React.FC = () => {
 
       {/* Main Subtitle Area */}
       <div className="flex-1 w-full max-w-4xl px-6 pt-24 pb-40 flex flex-col justify-end min-h-screen">
-        
+
         {/* Welcome Message */}
         {messages.length === 0 && !currentOriginal && !currentTranslated && (
              <div className="text-center text-gray-500 my-auto animate-in fade-in duration-700">
@@ -183,7 +235,7 @@ const App: React.FC = () => {
                  </div>
                  <p className="text-2xl mb-2 font-light">Real-time Interpretation</p>
                  <p className="text-sm mb-6">Press "Start" to begin interpreting between <span className="text-blue-400 font-semibold">{langA}</span> and <span className="text-purple-400 font-semibold">{langB}</span>.</p>
-                 
+
                  <div className="inline-block px-4 py-2 rounded-lg bg-gray-900 border border-gray-800 text-xs text-gray-400">
                     Tip: Click the gear icon ⚙️ to change languages.
                  </div>
@@ -192,9 +244,9 @@ const App: React.FC = () => {
 
         {/* History */}
         {messages.map((msg, idx) => (
-            <SubtitleCard 
-                key={msg.id} 
-                message={msg} 
+            <SubtitleCard
+                key={msg.id}
+                message={msg}
                 isRecent={false} // History items fade back slightly
             />
         ))}
@@ -202,7 +254,7 @@ const App: React.FC = () => {
         {/* Current Active Turn */}
         {(currentOriginal || currentTranslated) && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
-                <SubtitleCard 
+                <SubtitleCard
                     message={{
                         id: 'current',
                         original: currentOriginal,
@@ -214,7 +266,7 @@ const App: React.FC = () => {
                 />
             </div>
         )}
-        
+
         <div ref={bottomRef} />
       </div>
 
@@ -226,7 +278,7 @@ const App: React.FC = () => {
       </div>
 
       {/* Language Settings Modal */}
-      <LanguageSettings 
+      <LanguageSettings
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         langA={langA}

@@ -1,4 +1,4 @@
-# Live Translator - 实时同声传译
+# LiveTranslator - 实时同声传译
 
 基于 Google Gemini Live API 的实时语音翻译应用，支持多语言同声传译，边说边翻译并显示双语字幕。
 
@@ -9,7 +9,7 @@
 - 双语字幕同步显示（原文 + 译文）
 - 实时音频波形可视化
 - 深色主题现代 UI
-- 支持语音输出翻译结果
+- 每日使用次数限制（100次/天）
 
 ## 技术栈
 
@@ -26,12 +26,12 @@
 npm install
 ```
 
-### 2. 配置 API Key
+### 2. 配置环境变量
 
-在 `src/App.tsx` 中配置你的 Gemini API Key：
+创建 `.env` 文件：
 
-```typescript
-const API_KEY = 'your_gemini_api_key';
+```env
+VITE_GEMINI_API_KEY=your_gemini_api_key
 ```
 
 获取 API Key: [Google AI Studio](https://aistudio.google.com/apikey)
@@ -65,7 +65,6 @@ npm run dev
 │   └── SubtitleCard.tsx     # 字幕卡片组件
 ├── services/
 │   ├── liveClient.ts        # Gemini Live API 客户端
-│   ├── siliconFlowClient.ts # SiliconFlow API 客户端（备用）
 │   └── audioUtils.ts        # 音频处理工具
 ├── types.ts                 # TypeScript 类型定义
 ├── index.html               # HTML 模板
@@ -73,18 +72,9 @@ npm run dev
 └── tailwind.config.js       # Tailwind 配置
 ```
 
-## API 说明
-
-项目支持两种 API 后端：
-
-1. **Google Gemini Live API**（默认）- 使用 `liveClient.ts`，支持真正的实时流式语音识别和翻译
-2. **SiliconFlow API**（备用）- 使用 `siliconFlowClient.ts`，基于 Qwen3-Omni 模型
-
 ## 部署到 Vercel
 
 ### 1. 准备工作
-
-确保项目可以正常构建：
 
 ```bash
 npm run build
@@ -95,22 +85,23 @@ npm run build
 1. 登录 [Vercel](https://vercel.com)
 2. 点击 **Add New → Project**
 3. 导入 GitHub 仓库
-4. Vercel 会自动检测为 Vite 项目，无需额外配置
-5. 点击 **Deploy** 开始部署
+4. 点击 **Deploy**
 
-### 3. 环境变量配置
+### 3. 环境变量
 
-在 Vercel 项目的 **Settings → Environment Variables** 中添加：
+在 **Settings → Environment Variables** 添加：
 
 | 变量名 | 值 |
 |--------|-----|
 | `VITE_GEMINI_API_KEY` | 你的 Gemini API Key |
 
-添加后需要重新部署才能生效。
+添加后重新部署生效。
 
-### 4. 部署完成
+## 使用限制
 
-部署成功后，Vercel 会提供一个 `.vercel.app` 域名，也可以在 **Settings → Domains** 绑定自定义域名。
+- 每个用户每天限制 100 次使用
+- 次日自动重置
+- 基于 localStorage 实现
 
 ## License
 
