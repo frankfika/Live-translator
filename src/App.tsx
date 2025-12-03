@@ -90,9 +90,6 @@ const App: React.FC = () => {
           onOpen: () => {
             setStatus(ConnectionStatus.CONNECTED);
             setStream(client.getStream());
-            // 连接成功后扣减次数
-            const newRemaining = incrementUsage();
-            setRemaining(newRemaining);
           },
           onClose: () => {
             setStatus(ConnectionStatus.DISCONNECTED);
@@ -118,6 +115,17 @@ const App: React.FC = () => {
             const translatedText = currentTranslatedRef.current;
 
             if (originalText.trim() || translatedText.trim()) {
+              // 每句话扣减一次
+              const newRemaining = incrementUsage();
+              setRemaining(newRemaining);
+
+              // 检查是否超限
+              if (newRemaining < 0) {
+                alert(`今日使用次数已达上限 (${DAILY_LIMIT}次/天)，请明天再来！`);
+                client.disconnect();
+                return;
+              }
+
               setMessages(prev => [
                 ...prev,
                 {
