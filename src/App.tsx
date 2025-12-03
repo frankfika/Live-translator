@@ -5,7 +5,7 @@ import AudioVisualizer from '@/components/AudioVisualizer';
 import SubtitleCard from '@/components/SubtitleCard';
 import LanguageSettings from '@/components/LanguageSettings';
 
-const API_KEY = process.env.GEMINI_API_KEY || '';
+const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.DISCONNECTED);
@@ -41,9 +41,7 @@ const App: React.FC = () => {
     liveClientRef.current = client;
 
     // Construct the system instruction based on selected languages
-    const systemInstruction = `
-    你是一名专业同声传译。请将语音转写为文本，并在两种语言之间互译：如果输入是${langA}，则译为${langB}；如果输入是${langB}，则译为${langA}。仅输出严格JSON：{"transcript":"","translation":""}
-    `;
+    const systemInstruction = `你是一名专业同声传译。请在两种语言之间互译：如果输入是${langA}，则译为${langB}；如果输入是${langB}，则译为${langA}。直接输出翻译结果，不要添加任何解释。`;
 
     await client.connect(
       { systemInstruction }, 

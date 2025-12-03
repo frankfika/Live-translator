@@ -24,7 +24,8 @@ const LANGUAGES = [
   'Hindi',
   'Arabic',
   'Turkish',
-  'Vietnamese'
+  'Vietnamese',
+  'Swedish'
 ];
 
 const LanguageSettings: React.FC<Props> = ({ 
