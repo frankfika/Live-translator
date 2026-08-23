@@ -1,0 +1,8 @@
+{
+  "name": "同声传译-实时字幕",
+  "description": "Real-time AI subtitles and simultaneous interpretation with multiple AI providers (SiliconFlow / DashScope / Zhipu / OpenAI-compatible).",
+  "requestFramePermissions": [
+    "microphone",
+    "display-capture"
+  ]
+}
