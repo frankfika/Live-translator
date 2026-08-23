@@ -2,6 +2,29 @@
 
 一个基于 Tauri 2 + React 19 的桌面端实时语音翻译工具，支持多种国产 AI 模型。
 
+## 📥 下载 v1.0.0
+
+👉 [GitHub Releases](https://github.com/frankfika/Live-translator/releases/tag/v1.0.0)
+
+| 平台 | 架构 | 文件 |
+|---|---|---|
+| **macOS** | Apple Silicon | `ai-interpreter-v1.0.0-macOS-aarch64.dmg` (5.4 MB) |
+| Windows / Linux | x86_64 | CI 构建中，待 `gh auth refresh -s workflow` 后自动追加 |
+
+## 🔧 v1.0.0 修复（针对"第三方会议无效"问题）
+
+v1.0.0 完整修复了用户在 Zoom/腾讯会议/Teams 等第三方会议软件中使用时遇到的音频失效问题：
+
+| 症状 | 根因 | 修复 |
+|---|---|---|
+| **macOS 麦克风收音失败** | 缺失 `NSMicrophoneUsageDescription`，WKWebView 静默拒绝 | 新增 `src-tauri/Info.plist` |
+| **会议回声啸叫** | `echoCancellation/noiseSuppression/autoGainControl` 全部关闭 | 默认开启 + UI 提供开关 |
+| **macOS "系统音频"无效** | WKWebView 不支持 `getDisplayMedia` | macOS 引导用 BlackHole 虚拟声卡；Windows 保留 getDisplayMedia |
+| **只有内建麦的 Mac 设备列表空** | `default`/`communications` 设备被过滤 | 保留并显示为"系统默认输入设备" |
+| **自定义 OpenAI baseUrl 被拦截** | CSP `connect-src` 固定白名单 | 改为 `https:` / `wss:` 通配 |
+
+完整修复报告见 [AUDIO-FIX-REPORT.md](AUDIO-FIX-REPORT.md)，发布说明见 [RELEASE-NOTES-v1.0.0.md](RELEASE-NOTES-v1.0.0.md)。
+
 ## 特性
 
 - 🎙 **多种音频输入** — 内建/外接麦克风、USB 麦、蓝牙耳机、虚拟声卡（BlackHole / VB-Cable）；系统音频（Windows: getDisplayMedia 抓会议声音；macOS: 需用 BlackHole 虚拟声卡）
