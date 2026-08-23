@@ -1,0 +1,95 @@
+name: Release Tauri App
+
+# 参考 https://v2.tauri.app/start/publish/github-actions/
+# 触发：推送 v* 标签时构建多平台安装包并发布到 GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--bundles dmg app'
+          - platform: ubuntu-22.04
+            args: '--bundles deb appimage'
+          - platform: windows-latest
+            args: '--bundles msi nsis'
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Build and release Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'AI 同声传译 · 实时字幕 ${{ github.ref_name }}'
+          releaseBody: |
+            多平台自动构建产物：
+            - macOS: .dmg / .app
+            - Windows: .msi / NSIS .exe
+            - Linux: .deb / .appimage
+
+            完整说明见 README。
+          releaseDraft: true
+          args: ${{ matrix.args }}
+
+      - name: Upload macOS .dmg (extra safety)
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: ignore
