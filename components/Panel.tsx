@@ -3,6 +3,7 @@ import { ConnectionStatus, SubtitleMessage } from '../types';
 import type { InterpreterApi } from '../hooks/useInterpreter';
 import LanguageSettings, { LANGUAGES, SettingsTab } from './LanguageSettings';
 import { findProvider } from '../services/providers';
+import { isTauriApp } from '../services/tauri';
 import { IconCopy, IconDownload, IconPip, IconPlay, IconStop, IconTrash } from './icons';
 
 /**
@@ -22,6 +23,8 @@ interface Props {
 const langLabel = (id: string) => LANGUAGES.find((l) => l.id === id)?.label ?? id;
 const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent);
 const MOD = isMac ? '⇧⌘' : 'Ctrl+Shift+';
+// 浏览器里没有全局快捷键，用空格
+const START_KEY = isTauriApp() ? `${MOD}R` : '空格';
 
 function fmtTime(ts: number) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -86,8 +89,11 @@ const Panel: React.FC<Props> = ({ api, onShowOverlay, overlayLabel = '悬浮字�
   const listRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
+  // 设置异步加载完成后再决定首屏：没 Key 去配置，有 Key 看记录
   useEffect(() => {
-    if (api.ready && !hasApiKey) { setView('settings'); setSettingsTab('connection'); }
+    if (!api.ready) return;
+    if (hasApiKey) setView('history');
+    else { setView('settings'); setSettingsTab('connection'); }
   }, [api.ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -144,7 +150,7 @@ const Panel: React.FC<Props> = ({ api, onShowOverlay, overlayLabel = '悬浮字�
         )}
         <button
           onClick={hasApiKey || running ? api.toggle : () => { setView('settings'); setSettingsTab('connection'); }}
-          title={`${MOD}R`}
+          title={START_KEY}
           className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-sm font-semibold ${running ? 'bg-red-600 hover:bg-red-500' : 'bg-sky-600 hover:bg-sky-500'} text-white`}
         >
           {running ? <><IconStop size={12} /> 停止</> : <><IconPlay size={12} /> 开始</>}
@@ -177,7 +183,7 @@ const Panel: React.FC<Props> = ({ api, onShowOverlay, overlayLabel = '悬浮字�
                 <p className="mt-2 text-sm text-gray-500 max-w-md leading-relaxed">
                   {running
                     ? '有人说话时，字幕会实时出现在屏幕底部的悬浮条上，这里保留完整记录。'
-                    : <>点「开始」或按 <kbd className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 text-xs">{MOD}R</kbd>。翻译会显示在屏幕底部的悬浮字幕条上，不需要一直开着这个窗口。</>}
+                    : <>点「开始」或按 <kbd className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 text-xs">{START_KEY}</kbd>。{isTauriApp() ? '翻译会显示在屏幕底部的悬浮字幕条上，不需要一直开着这个窗口。' : '点「悬浮字幕」可以弹出一个置顶小窗，切到会议标签页也能看到字幕。'}</>}
                 </p>
               </div>
             ) : (

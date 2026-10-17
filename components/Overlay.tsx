@@ -28,6 +28,7 @@ export interface OverlayProps {
 
 const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent);
 const MOD = isMac ? '⇧⌘' : 'Ctrl+Shift+';
+const HAS_GLOBAL_KEYS = typeof window !== 'undefined' && '__TAURI__' in window;
 
 const LANG_SHORT: Record<string, string> = {
   English: '英', Chinese: '中', Japanese: '日', Korean: '韩', French: '法', German: '德', Spanish: '西',
@@ -111,7 +112,7 @@ const Overlay: React.FC<OverlayProps> = ({
       className={`absolute top-1.5 right-1.5 flex items-center gap-0.5 rounded-lg px-1 py-0.5 transition-opacity duration-150 ${hover ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
       style={{ background: 'rgba(30,32,40,0.92)' }}
     >
-      <button className={btn} title={running ? `停止 (${MOD}R)` : `开始 (${MOD}R)`} onClick={api.toggle}>
+      <button className={btn} title={HAS_GLOBAL_KEYS ? (running ? `停止 (${MOD}R)` : `开始 (${MOD}R)`) : (running ? '停止' : '开始')} onClick={api.toggle}>
         {running ? <IconStop size={13} /> : <IconPlay size={13} />}
       </button>
       <button
@@ -165,7 +166,7 @@ const Overlay: React.FC<OverlayProps> = ({
         <span className="flex-1" />
         {hasApiKey ? (
           <button className="ov-chip bg-sky-500/90 hover:bg-sky-400 text-white flex items-center gap-1.5" onClick={api.start}>
-            <IconPlay size={11} /> 开始 <span className="text-white/70 font-normal">{MOD}R</span>
+            <IconPlay size={11} /> 开始 {HAS_GLOBAL_KEYS && <span className="text-white/70 font-normal">{MOD}R</span>}
           </button>
         ) : (
           <button className="ov-chip bg-amber-400 hover:bg-amber-300 text-gray-900" onClick={() => onOpenPanel('connection')}>

@@ -223,7 +223,7 @@ export class LiveSession {
           text: original,
           systemInstruction,
           cfg: providerConfig,
-          history: this.history,
+          history: [...this.history],
           signal,
           onChunk: (chunk) => {
             acc += chunk;

@@ -81,12 +81,21 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
 
   const previewRef = useRef<{ stream: MediaStream; ctx: AudioContext; raf: number } | null>(null);
   const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
+  // 用户是否动过表单：没动过就始终跟随外部设置（异步加载完成、悬浮窗里切了音源等）
+  const editedRef = useRef(false);
 
   useEffect(() => { if (initialTab) setTab(initialTab); }, [initialTab]);
-  // 外部设置变化（比如悬浮窗里切了音源）且本地没改动时同步
-  useEffect(() => { if (!dirty || !isOpen) setDraft(settings); }, [settings, isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!editedRef.current || !isOpen) {
+      editedRef.current = false;
+      setDraft(settings);
+    }
+  }, [settings, isOpen]);
 
-  const set = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) => setDraft((d) => ({ ...d, [k]: v }));
+  const set = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) => {
+    editedRef.current = true;
+    setDraft((d) => ({ ...d, [k]: v }));
+  };
 
   const stopPreview = useCallback(() => {
     const p = previewRef.current;
@@ -184,12 +193,14 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
   };
 
   const handleProviderChange = (id: string) => {
+    editedRef.current = true;
     const next = findProvider(id);
     setDraft((d) => ({ ...d, providerId: id, baseUrl: next.defaultBaseUrl, asrModel: next.defaultAsrModel, llmModel: next.defaultLlmModel }));
     setApiTest({ state: 'idle' });
   };
 
   const save = () => {
+    editedRef.current = false;
     onSave({ ...draft, apiKey: draft.apiKey.trim(), baseUrl: draft.baseUrl.trim(), asrModel: draft.asrModel.trim(), llmModel: draft.llmModel.trim() });
     if (!embedded) onClose?.();
   };
@@ -405,7 +416,7 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
             {LANGUAGES.map((l) => <option key={l.id} value={l.id} disabled={l.id === draft.langB}>{l.label}</option>)}
           </select>
         </div>
-        <button type="button" title="交换" onClick={() => setDraft((d) => ({ ...d, langA: d.langB, langB: d.langA }))} className="mb-1 rounded-lg px-2 py-2 text-gray-400 hover:text-white hover:bg-gray-800">⇄</button>
+        <button type="button" title="交换" onClick={() => { editedRef.current = true; setDraft((d) => ({ ...d, langA: d.langB, langB: d.langA })); }} className="mb-1 rounded-lg px-2 py-2 text-gray-400 hover:text-white hover:bg-gray-800">⇄</button>
         <div>
           <label htmlFor="lang-b" className={labelCls}>语言 B</label>
           <select id="lang-b" value={draft.langB} onChange={(e) => set('langB', e.target.value)} className={inputCls}>
@@ -483,7 +494,7 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
       <footer className="flex-none flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-800">
         {dirty && <span className="mr-auto text-xs text-amber-300/80">有未保存的修改</span>}
         {embedded ? (
-          dirty && <button type="button" onClick={() => setDraft(settings)} className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-800">还原</button>
+          dirty && <button type="button" onClick={() => { editedRef.current = false; setDraft(settings); }} className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-800">还原</button>
         ) : (
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-800">取消</button>
         )}
