@@ -150,7 +150,6 @@ const Panel: React.FC<Props> = ({ api, onShowOverlay, overlayLabel = '悬浮字�
         )}
         <button
           onClick={hasApiKey || running ? api.toggle : () => { setView('settings'); setSettingsTab('connection'); }}
-          title={START_KEY}
           className={`flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-sm font-semibold ${running ? 'bg-red-600 hover:bg-red-500' : 'bg-sky-600 hover:bg-sky-500'} text-white`}
         >
           {running ? <><IconStop size={12} /> 停止</> : <><IconPlay size={12} /> 开始</>}

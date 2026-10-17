@@ -155,6 +155,7 @@ const Overlay: React.FC<OverlayProps> = ({
         <div className="flex flex-none gap-1.5 pt-0.5">
           <button className="ov-chip bg-white/10 hover:bg-white/20" onClick={() => { api.dismissError(); api.start(); }}>重试</button>
           <button className="ov-chip bg-white/10 hover:bg-white/20" onClick={() => onOpenPanel(state.errorTab ?? undefined)}>设置</button>
+          {onToggleClickThrough && <button className={btn} title={`锁定：鼠标穿透，不挡下面的窗口（${MOD}L 解锁）`} onClick={onToggleClickThrough}><IconLock size={13} /></button>}
           <button className="ov-chip text-white/60 hover:text-white" onClick={api.dismissError}>✕</button>
         </div>
       </div>
@@ -173,6 +174,7 @@ const Overlay: React.FC<OverlayProps> = ({
             先配置 API Key →
           </button>
         )}
+        {onToggleClickThrough && <button className={btn} title={`锁定：鼠标穿透，不挡下面的窗口（${MOD}L 解锁）`} onClick={onToggleClickThrough}><IconLock size={13} /></button>}
         <button className={btn} title="设置与记录" onClick={() => onOpenPanel()}><IconSettings size={14} /></button>
         {onHide && <button className={btn} title={`隐藏（${MOD}S 再次显示）`} onClick={onHide}><IconClose size={14} /></button>}
       </div>
