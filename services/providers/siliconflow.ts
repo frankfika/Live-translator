@@ -1,4 +1,4 @@
-import { Provider, ProviderConfig, AsrRequest, TranslateRequest } from './types';
+import { Provider, ProviderConfig, AsrRequest, TranslateRequest, ChatTurn } from './types';
 
 const API_BASE = 'https://api.siliconflow.cn/v1';
 
@@ -44,7 +44,7 @@ export class SiliconFlowProvider implements Provider {
     return null;
   }
 
-  async transcribe({ audio, cfg }: AsrRequest): Promise<string> {
+  async transcribe({ audio, cfg, signal }: AsrRequest): Promise<string> {
     const url = `${stripTrailingSlash(cfg.baseUrl)}/audio/transcriptions`;
     const formData = new FormData();
     formData.append('file', audio, 'audio.wav');
@@ -54,6 +54,7 @@ export class SiliconFlowProvider implements Provider {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
       body: formData,
+      signal,
     });
 
     if (!response.ok) {
@@ -63,7 +64,7 @@ export class SiliconFlowProvider implements Provider {
     return (result.text || '').trim();
   }
 
-  async translate({ text, systemInstruction, onChunk, cfg }: TranslateRequest): Promise<void> {
+  async translate({ text, systemInstruction, onChunk, cfg, history, signal }: TranslateRequest): Promise<void> {
     const url = `${stripTrailingSlash(cfg.baseUrl)}/chat/completions`;
     await streamChatCompletion({
       url,
@@ -72,6 +73,9 @@ export class SiliconFlowProvider implements Provider {
       systemInstruction,
       userText: text,
       onChunk,
+      history,
+      signal,
+      extraBody: thinkingOffBody(cfg.llmModel),
     });
   }
 }
@@ -102,6 +106,14 @@ export function apiKeyLooksValid(key: string): string | null {
   return null;
 }
 
+/**
+ * Qwen3 系列默认开启"思考模式"，同传场景下会多出几秒延迟且可能把思考过程吐进译文。
+ * SiliconFlow / DashScope 都支持 enable_thinking: false 关闭。其他模型不传，避免 400。
+ */
+export function thinkingOffBody(model: string): Record<string, unknown> | undefined {
+  return /qwen3/i.test(model) ? { enable_thinking: false } : undefined;
+}
+
 export function stripTrailingSlash(s: string): string {
   return s.replace(/\/+$/, '');
 }
@@ -127,6 +139,9 @@ export async function streamChatCompletion(opts: {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
+  history?: ChatTurn[];
+  /** 额外请求字段（如 Qwen3 的 enable_thinking: false） */
+  extraBody?: Record<string, unknown>;
 }): Promise<void> {
   const response = await fetch(opts.url, {
     method: 'POST',
@@ -138,11 +153,13 @@ export async function streamChatCompletion(opts: {
       model: opts.model,
       messages: [
         { role: 'system', content: opts.systemInstruction },
+        ...(opts.history ?? []),
         { role: 'user', content: opts.userText },
       ],
       temperature: opts.temperature ?? 0.1,
       max_tokens: opts.maxTokens ?? 800,
       stream: true,
+      ...(opts.extraBody ?? {}),
     }),
     signal: opts.signal,
   });

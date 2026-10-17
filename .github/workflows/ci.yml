@@ -59,3 +59,30 @@ jobs:
 
       - name: Build web frontend
         run: npm run build:web
+  # 系统音频采集（cpal）只在 Windows / macOS 编译，Linux job 覆盖不到，单独检查
+  rust-desktop:
+    name: Cargo check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Cargo check + unit tests
+        shell: bash
+        run: |
+          mkdir -p dist
+          cd src-tauri
+          cargo check --all-targets
+          cargo test --lib

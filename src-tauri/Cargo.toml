@@ -1,6 +1,6 @@
 [package]
 name = "ai-interpreter"
-version = "1.0.0"
+version = "1.1.0"
 description = "AI-powered simultaneous interpretation with live subtitles"
 authors = ["OpenCSG"]
 license = "MIT"
@@ -21,7 +21,7 @@ tauri-build = { version = "2.6.2", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.2", features = ["tray-icon"] }
+tauri = { version = "2.11.2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
@@ -32,3 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# 系统音频回环采集：Windows (WASAPI loopback) / macOS 14.6+ (Core Audio process tap)
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+cpal = "0.17"

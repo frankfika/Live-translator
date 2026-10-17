@@ -1,812 +1,510 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { AudioSource, AudioInputDevice } from '../types';
+import { AudioInputDevice } from '../types';
 import {
   buildMicrophoneConstraints,
   formatMediaError,
   normalizeAudioInputDevices,
   isVirtualAudioDevice,
+  isLoopbackInputDevice,
 } from '../services/mediaDevices';
-import { PROVIDERS, findProvider } from '../services/providers';
+import { PROVIDERS, findProvider, buildProviderConfig } from '../services/providers';
+import { AppSettings } from '../services/settings';
+import { isTauriApp } from '../services/tauri';
+import { humanizeError } from '../services/liveSession';
+
+export type SettingsTab = 'connection' | 'audio' | 'language' | 'display';
 
 interface Props {
-  isOpen: boolean;
-  onClose: () => void;
-  langA: string;
-  langB: string;
-  onSave: (
-    newLangA: string,
-    newLangB: string,
-    newAudioSource: AudioSource,
-    newAudioInputDeviceId: string,
-    newProviderId: string,
-    newApiKey: string,
-    newBaseUrl: string,
-    newAsrModel: string,
-    newLlmModel: string,
-    newEchoCancellation: boolean,
-  ) => void;
-  audioSource: AudioSource;
-  audioInputDeviceId: string;
-  providerId: string;
-  apiKey: string;
-  baseUrl: string;
-  asrModel: string;
-  llmModel: string;
-  echoCancellation: boolean;
+  settings: AppSettings;
+  onSave: (next: AppSettings) => void;
+  /** 渲染为弹窗（默认）还是直接嵌入页面 */
+  embedded?: boolean;
+  isOpen?: boolean;
+  onClose?: () => void;
+  initialTab?: SettingsTab;
 }
 
-interface AudioSourceButtonProps {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-  activeClass: string;
-  inactiveClass: string;
-}
+export const LANGUAGES: { id: string; label: string }[] = [
+  { id: 'Chinese', label: '中文' }, { id: 'English', label: 'English' }, { id: 'Japanese', label: '日本語' },
+  { id: 'Korean', label: '한국어' }, { id: 'French', label: 'Français' }, { id: 'German', label: 'Deutsch' },
+  { id: 'Spanish', label: 'Español' }, { id: 'Russian', label: 'Русский' }, { id: 'Portuguese', label: 'Português' },
+  { id: 'Italian', label: 'Italiano' }, { id: 'Hindi', label: 'हिन्दी' }, { id: 'Arabic', label: 'العربية' },
+  { id: 'Turkish', label: 'Türkçe' }, { id: 'Vietnamese', label: 'Tiếng Việt' },
+];
 
-const AudioSourceButton: React.FC<AudioSourceButtonProps> = ({
-  active,
-  onClick,
-  icon,
-  label,
-  activeClass,
-  inactiveClass
-}) => (
+const TABS: { id: SettingsTab; label: string }[] = [
+  { id: 'connection', label: '模型服务' },
+  { id: 'audio', label: '声音来源' },
+  { id: 'language', label: '语言与术语' },
+  { id: 'display', label: '字幕外观' },
+];
+
+const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent);
+const isWindows = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || navigator.userAgent);
+
+const inputCls =
+  'w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2.5 text-sm text-white outline-none transition-colors focus:border-sky-500 placeholder:text-gray-600';
+const labelCls = 'text-xs font-medium text-gray-400 mb-1.5 block';
+
+const Toggle: React.FC<{ checked: boolean; onChange: (v: boolean) => void; id?: string }> = ({ checked, onChange, id }) => (
   <button
-    onClick={onClick}
-    className={`flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-all ${
-      active ? activeClass : inactiveClass
-    }`}
+    id={id}
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    onClick={() => onChange(!checked)}
+    className={`shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${checked ? 'bg-sky-600' : 'bg-gray-700'}`}
   >
-    {icon}
-    <span className="font-medium">{label}</span>
+    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
   </button>
 );
 
-const LANGUAGES = [
-  'English', 'Chinese', 'Spanish', 'French', 'German', 'Japanese',
-  'Korean', 'Russian', 'Portuguese', 'Italian', 'Hindi', 'Arabic',
-  'Turkish', 'Vietnamese'
-];
+const Row: React.FC<{ title: string; desc?: React.ReactNode; children: React.ReactNode }> = ({ title, desc, children }) => (
+  <div className="flex items-start justify-between gap-4 py-3">
+    <div className="min-w-0">
+      <p className="text-sm text-gray-100">{title}</p>
+      {desc && <p className="mt-0.5 text-xs text-gray-500 leading-relaxed">{desc}</p>}
+    </div>
+    <div className="shrink-0">{children}</div>
+  </div>
+);
 
-const TABS = [
-  {
-    id: 'connection',
-    label: '连接',
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/>
-      </svg>
-    ),
-  },
-  {
-    id: 'audio',
-    label: '音频',
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-        <line x1="12" y1="19" x2="12" y2="22"/>
-      </svg>
-    ),
-  },
-  {
-    id: 'language',
-    label: '语言',
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="10"/>
-        <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-      </svg>
-    ),
-  },
-] as const;
-
-type TabId = typeof TABS[number]['id'];
-
-const LEVEL_IDLE_TEXT = '点击"测试输入"验证当前设备是否真的有声音。';
-
-const LanguageSettings: React.FC<Props> = ({
-  isOpen,
-  onClose,
-  langA,
-  langB,
-  onSave,
-  audioSource,
-  audioInputDeviceId,
-  providerId,
-  apiKey,
-  baseUrl,
-  asrModel,
-  llmModel,
-  echoCancellation,
-}) => {
-  // macOS WKWebView 不支持 getDisplayMedia,系统音频模式必然失败。
-  // 在 UI 上按平台分支引导:mac → 虚拟声卡;Windows → 保留屏幕共享说明
-  const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform || navigator.userAgent);
-  const [activeTab, setActiveTab] = useState<TabId>('connection');
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [selected, setSelected] = useState<string[]>([langA, langB]);
-  const [localAudioSource, setLocalAudioSource] = useState<AudioSource>(audioSource);
-  const [localAudioInputDeviceId, setLocalAudioInputDeviceId] = useState(audioInputDeviceId);
-  const [localProviderId, setLocalProviderId] = useState(providerId || 'siliconflow');
-  const [localApiKey, setLocalApiKey] = useState(apiKey);
-  const [localBaseUrl, setLocalBaseUrl] = useState(baseUrl);
-  const [localAsrModel, setLocalAsrModel] = useState(asrModel);
-  const [localLlmModel, setLocalLlmModel] = useState(llmModel);
-  // 麦克风模式下本地编辑的回声消除/降噪/自动增益开关,默认开
-  // 会议场景建议开启(防回声);采集高质量语音给 ASR 时可关闭
-  const [localEchoCancellation, setLocalEchoCancellation] = useState<boolean>(echoCancellation);
-  const [audioInputs, setAudioInputs] = useState<AudioInputDevice[]>([]);
-  const [isLoadingInputs, setIsLoadingInputs] = useState(false);
+const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen = true, onClose, initialTab }) => {
+  const [tab, setTab] = useState<SettingsTab>(initialTab ?? 'connection');
+  const [draft, setDraft] = useState<AppSettings>(settings);
+  const [showKey, setShowKey] = useState(false);
+  const [inputs, setInputs] = useState<AudioInputDevice[]>([]);
   const [deviceError, setDeviceError] = useState<string | null>(null);
-  const [isTestingInput, setIsTestingInput] = useState(false);
-  const [inputLevel, setInputLevel] = useState(0);
+  const [testing, setTesting] = useState(false);
+  const [level, setLevel] = useState(0);
+  const [apiTest, setApiTest] = useState<{ state: 'idle' | 'running' | 'ok' | 'fail'; msg?: string }>({ state: 'idle' });
 
-  const modalRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
-  const previewStreamRef = useRef<MediaStream | null>(null);
-  const previewAudioContextRef = useRef<AudioContext | null>(null);
-  const previewAnimationRef = useRef<number | null>(null);
+  const previewRef = useRef<{ stream: MediaStream; ctx: AudioContext; raf: number } | null>(null);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
 
-  const currentProvider = findProvider(localProviderId);
+  useEffect(() => { if (initialTab) setTab(initialTab); }, [initialTab]);
+  // 外部设置变化（比如悬浮窗里切了音源）且本地没改动时同步
+  useEffect(() => { if (!dirty || !isOpen) setDraft(settings); }, [settings, isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const stopInputPreview = useCallback(async () => {
-    if (previewAnimationRef.current) {
-      cancelAnimationFrame(previewAnimationRef.current);
-      previewAnimationRef.current = null;
+  const set = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) => setDraft((d) => ({ ...d, [k]: v }));
+
+  const stopPreview = useCallback(() => {
+    const p = previewRef.current;
+    if (p) {
+      cancelAnimationFrame(p.raf);
+      p.stream.getTracks().forEach((t) => t.stop());
+      void p.ctx.close().catch(() => {});
+      previewRef.current = null;
     }
-    if (previewStreamRef.current) {
-      previewStreamRef.current.getTracks().forEach((track) => track.stop());
-      previewStreamRef.current = null;
-    }
-    if (previewAudioContextRef.current) {
-      try { await previewAudioContextRef.current.close(); } catch { /* noop */ }
-      previewAudioContextRef.current = null;
-    }
-    setIsTestingInput(false);
-    setInputLevel(0);
+    setTesting(false);
+    setLevel(0);
   }, []);
 
-  const refreshAudioInputs = useCallback(async () => {
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
-      setDeviceError('当前浏览器不支持音频设备枚举，请换用最新版 Chrome。');
-      setAudioInputs([]);
-      return;
-    }
-    setIsLoadingInputs(true);
-    setDeviceError(null);
+  const refreshInputs = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const nextInputs = normalizeAudioInputDevices(devices);
-      setAudioInputs(nextInputs);
-      setLocalAudioInputDeviceId((current) => {
-        if (!current) return '';
-        return nextInputs.some((device) => device.deviceId === current) ? current : '';
-      });
+      setInputs(normalizeAudioInputDevices(await navigator.mediaDevices.enumerateDevices()));
     } catch (err) {
-      setAudioInputs([]);
       setDeviceError(formatMediaError(err, '读取音频设备列表失败。'));
-    } finally {
-      setIsLoadingInputs(false);
     }
   }, []);
 
-  const handleStartInputTest = useCallback(async () => {
-    await stopInputPreview();
+  useEffect(() => {
+    if (!isOpen) { stopPreview(); return; }
+    void refreshInputs();
+    const md = navigator.mediaDevices;
+    if (!md?.addEventListener) return;
+    const h = () => void refreshInputs();
+    md.addEventListener('devicechange', h);
+    return () => md.removeEventListener('devicechange', h);
+  }, [isOpen, refreshInputs, stopPreview]);
+
+  useEffect(() => () => stopPreview(), [stopPreview]);
+
+  const startPreview = async () => {
+    stopPreview();
     setDeviceError(null);
     try {
+      const dev = inputs.find((d) => d.deviceId === draft.audioInputDeviceId);
+      const raw = dev && (dev.isVirtual || isLoopbackInputDevice(dev.label));
+      const on = draft.echoCancellation && !raw;
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: buildMicrophoneConstraints(localAudioInputDeviceId, {
-          echoCancellation: localEchoCancellation,
-          noiseSuppression: localEchoCancellation,
-          autoGainControl: localEchoCancellation,
-        }),
+        audio: buildMicrophoneConstraints(draft.audioInputDeviceId || undefined, { echoCancellation: on, noiseSuppression: on, autoGainControl: on }),
       });
-      previewStreamRef.current = stream;
-      const audioContext = new AudioContext();
-      previewAudioContextRef.current = audioContext;
-      await audioContext.resume();
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      const data = new Uint8Array(analyser.fftSize);
-      setIsTestingInput(true);
+      const ctx = new AudioContext();
+      await ctx.resume().catch(() => {});
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      const data = new Float32Array(analyser.fftSize);
       const tick = () => {
-        analyser.getByteTimeDomainData(data);
+        analyser.getFloatTimeDomainData(data);
         let sum = 0;
-        for (let i = 0; i < data.length; i++) {
-          const normalized = (data[i] - 128) / 128;
-          sum += normalized * normalized;
-        }
-        const rms = Math.sqrt(sum / data.length);
-        const nextLevel = Math.min(1, rms * 6);
-        setInputLevel((previous) => previous * 0.55 + nextLevel * 0.45);
-        previewAnimationRef.current = requestAnimationFrame(tick);
+        for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+        const db = 20 * Math.log10(Math.max(Math.sqrt(sum / data.length), 1e-6));
+        setLevel((p) => p * 0.6 + Math.min(1, Math.max(0, (db + 60) / 60)) * 0.4);
+        if (previewRef.current) previewRef.current.raf = requestAnimationFrame(tick);
       };
-      tick();
-      await refreshAudioInputs();
+      previewRef.current = { stream, ctx, raf: requestAnimationFrame(tick) };
+      setTesting(true);
+      void refreshInputs();
     } catch (err) {
-      await stopInputPreview();
+      stopPreview();
       setDeviceError(formatMediaError(err, '无法启动输入测试。'));
     }
-  }, [localAudioInputDeviceId, localEchoCancellation, refreshAudioInputs, stopInputPreview]);
+  };
 
-  useEffect(() => {
-    if (isOpen) {
-      setSelected([langA, langB]);
-      setLocalAudioSource(audioSource);
-      setLocalAudioInputDeviceId(audioInputDeviceId);
-      setLocalProviderId(providerId || 'siliconflow');
-      setLocalApiKey(apiKey);
-      setLocalBaseUrl(baseUrl);
-      setLocalAsrModel(asrModel);
-      setLocalLlmModel(llmModel);
-      setLocalEchoCancellation(echoCancellation);
-      void refreshAudioInputs();
+  const provider = findProvider(draft.providerId);
+  const providerCfg = buildProviderConfig(provider, {
+    apiKey: draft.apiKey, baseUrl: draft.baseUrl, asrModel: draft.asrModel, llmModel: draft.llmModel,
+  });
+  const cfgError = provider.validateConfig(providerCfg);
 
-      // 检查 URL hash 是否指定了初始 tab（来自 App 的 "立即配置" 按钮）
-      const hash = window.location.hash;
-      const match = hash.match(/tab=(connection|audio|language)/);
-      if (match) {
-        setActiveTab(match[1] as TabId);
-        window.history.replaceState(null, '', window.location.pathname + window.location.search);
-      }
-    } else {
-      void stopInputPreview();
-      setShowApiKey(false);
+  const runApiTest = async () => {
+    if (cfgError) { setApiTest({ state: 'fail', msg: cfgError }); return; }
+    setApiTest({ state: 'running' });
+    let out = '';
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      await provider.translate({
+        text: '你好，很高兴见到你。',
+        systemInstruction: 'Translate the user text into English. Output only the translation.',
+        cfg: providerCfg,
+        signal: ctrl.signal,
+        onChunk: (c) => { out += c; },
+      });
+      setApiTest({ state: 'ok', msg: out.replace(/<think>[\s\S]*?<\/think>/g, '').trim().slice(0, 60) || '连接成功' });
+    } catch (err) {
+      const e = err as Error;
+      setApiTest({ state: 'fail', msg: e.name === 'AbortError' ? '请求超时' : humanizeError(e.message) });
+    } finally {
+      clearTimeout(timer);
     }
-  }, [isOpen, langA, langB, audioSource, audioInputDeviceId, providerId, apiKey, baseUrl, asrModel, llmModel, echoCancellation, refreshAudioInputs, stopInputPreview]);
+  };
 
+  const handleProviderChange = (id: string) => {
+    const next = findProvider(id);
+    setDraft((d) => ({ ...d, providerId: id, baseUrl: next.defaultBaseUrl, asrModel: next.defaultAsrModel, llmModel: next.defaultLlmModel }));
+    setApiTest({ state: 'idle' });
+  };
+
+  const save = () => {
+    onSave({ ...draft, apiKey: draft.apiKey.trim(), baseUrl: draft.baseUrl.trim(), asrModel: draft.asrModel.trim(), llmModel: draft.llmModel.trim() });
+    if (!embedded) onClose?.();
+  };
+
+  // Esc 关闭弹窗
   useEffect(() => {
-    if (!isOpen || typeof navigator === 'undefined' || !navigator.mediaDevices?.addEventListener) return;
-    const handleDeviceChange = () => { void refreshAudioInputs(); };
-    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
-    return () => navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
-  }, [isOpen, refreshAudioInputs]);
-
-  useEffect(() => {
-    if (localAudioSource !== 'microphone') void stopInputPreview();
-  }, [localAudioSource, stopInputPreview]);
-
-  useEffect(() => () => { void stopInputPreview(); }, [stopInputPreview]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    previousFocusRef.current = document.activeElement as HTMLElement;
-    const focusTimer = setTimeout(() => { modalRef.current?.focus(); }, 50);
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onClose(); return; }
-      if (e.key === 'Tab' && modalRef.current) {
-        const focusable = modalRef.current.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
-        } else if (document.activeElement === last) {
-          e.preventDefault(); first.focus();
-        }
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      clearTimeout(focusTimer);
-      previousFocusRef.current?.focus();
-    };
-  }, [isOpen, onClose]);
+    if (embedded || !isOpen) return;
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose?.(); };
+    document.addEventListener('keydown', h);
+    return () => document.removeEventListener('keydown', h);
+  }, [embedded, isOpen, onClose]);
 
   if (!isOpen) return null;
 
-  const handleToggle = (lang: string) => {
-    if (selected.includes(lang)) {
-      setSelected(selected.filter((item) => item !== lang));
-      return;
-    }
-    if (selected.length < 2) {
-      setSelected([...selected, lang]);
-      return;
-    }
-    setSelected([selected[0], lang]);
-  };
+  // ── 各 tab ──────────────────────────────────────────────
 
-  const handleSave = () => {
-    if (selected.length !== 2) return;
-    onSave(
-      selected[0],
-      selected[1],
-      localAudioSource,
-      localAudioInputDeviceId,
-      localProviderId,
-      localApiKey.trim(),
-      localBaseUrl.trim(),
-      localAsrModel.trim(),
-      localLlmModel.trim(),
-      localEchoCancellation,
-    );
-    onClose();
-  };
-
-  const isReady = selected.length === 2;
-  const hasDetectedInputs = audioInputs.length > 0;
-  const isDefaultDeviceSelected = localAudioInputDeviceId === '';
-  const levelWidth = `${Math.max(6, Math.round(inputLevel * 100))}%`;
-
-  // 改用 provider.validateConfig 真校验 — 之前只看长度 > 10,
-  // `'1234567890abc'` 12 字符都过审 → 绿条假承诺 → 启动 401
-  const apiKeyValidation = currentProvider.validateConfig({
-    apiKey: localApiKey,
-    baseUrl: localBaseUrl || currentProvider.defaultBaseUrl,
-    asrModel: localAsrModel || currentProvider.defaultAsrModel,
-    llmModel: localLlmModel || currentProvider.defaultLlmModel,
-  });
-  const hasApiKey = !apiKeyValidation; // null = 通过
-
-  // 切 provider 总是重置 baseUrl / asrModel / llmModel 到新 provider 默认
-  // 之前只在空才填,如果用户在 SiliconFlow 改成 Qwen2.5-7B 再切到 DashScope,
-  // 字段留着 "Qwen2.5-7B", DashScope 启动时报模型不存在
-  const handleProviderChange = (nextId: string) => {
-    setLocalProviderId(nextId);
-    const next = findProvider(nextId);
-    setLocalBaseUrl(next.defaultBaseUrl);
-    setLocalAsrModel(next.defaultAsrModel);
-    setLocalLlmModel(next.defaultLlmModel);
-  };
-
-  // ── Tab content renderers ──────────────────────────────────────────────
-
-  const renderConnectionTab = () => (
+  const connectionTab = (
     <div className="space-y-5">
       <div>
-        <label htmlFor="provider-select" className="text-sm font-medium text-gray-300 mb-2 block">
-          服务商
-        </label>
-        <select
-          id="provider-select"
-          value={localProviderId}
-          onChange={(e) => handleProviderChange(e.target.value)}
-          className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-3 text-sm text-white outline-none transition-colors focus:border-blue-500"
-        >
-          {PROVIDERS.map((p) => (
-            <option key={p.id} value={p.id}>{p.displayName}</option>
-          ))}
+        <label htmlFor="provider-select" className={labelCls}>服务商</label>
+        <select id="provider-select" value={draft.providerId} onChange={(e) => handleProviderChange(e.target.value)} className={inputCls}>
+          {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.displayName}</option>)}
         </select>
-        <p className="mt-2 text-[11px] text-gray-400 leading-relaxed">
-          {currentProvider.description}
-        </p>
+        <p className="mt-1.5 text-xs text-gray-500">{provider.description}</p>
       </div>
 
       <div>
-        <label htmlFor="api-key-input" className="text-sm font-medium text-gray-300 mb-2 block">
-          API Key
-        </label>
+        <label htmlFor="api-key-input" className={labelCls}>API Key</label>
         <div className="relative">
           <input
             id="api-key-input"
-            type={showApiKey ? 'text' : 'password'}
-            value={localApiKey}
-            onChange={(e) => setLocalApiKey(e.target.value)}
-            placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+            type={showKey ? 'text' : 'password'}
+            value={draft.apiKey}
+            onChange={(e) => { set('apiKey', e.target.value); setApiTest({ state: 'idle' }); }}
+            placeholder="sk-..."
             autoComplete="off"
             spellCheck={false}
-            className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-3 pr-20 text-sm text-white outline-none transition-colors focus:border-blue-500 placeholder:text-gray-600 font-mono"
+            className={`${inputCls} pr-16 font-mono`}
           />
-          <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-            {localApiKey && (
-              <button
-                type="button"
-                onClick={() => setShowApiKey((s) => !s)}
-                aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
-                className="p-1.5 rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
-                title={showApiKey ? '隐藏' : '显示'}
-              >
-                {showApiKey ? (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
-                ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                )}
-              </button>
-            )}
-            {localApiKey && (
-              <button
-                type="button"
-                onClick={() => setLocalApiKey('')}
-                aria-label="清空 API Key"
-                className="p-1.5 rounded-md text-gray-500 hover:text-red-300 hover:bg-gray-800 transition-colors"
-                title="清空"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            )}
-          </div>
-        </div>
-        <p className="mt-2 text-[11px] text-gray-400 leading-relaxed">
-          {currentProvider.keyUrl ? (
-            <>
-              获取地址：
-              <a href={currentProvider.keyUrl} target="_blank" rel="noopener" className="text-blue-400 hover:text-blue-300 underline underline-offset-2">
-                {currentProvider.keyUrl.replace(/^https?:\/\//, '')}
-              </a>
-            </>
-          ) : (
-            '请在所选服务商的官方控制台申请 API Key。'
+          {draft.apiKey && (
+            <button type="button" onClick={() => setShowKey((s) => !s)} className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-500 hover:text-gray-200 px-2 py-1">
+              {showKey ? '隐藏' : '显示'}
+            </button>
           )}
-        </p>
+        </div>
+        {provider.keyUrl && (
+          <p className="mt-1.5 text-xs text-gray-500">
+            获取：<a href={provider.keyUrl} target="_blank" rel="noopener" className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{provider.keyUrl.replace(/^https?:\/\//, '')}</a>
+          </p>
+        )}
       </div>
 
-      {hasApiKey ? (
-        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 flex items-center gap-2.5 fade-up">
-          <div className="w-7 h-7 rounded-full bg-emerald-500/20 flex items-center justify-center flex-none">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-300"><polyline points="20 6 9 17 4 12"/></svg>
-          </div>
-          <span className="text-sm text-emerald-200 font-medium">配置已就绪，可以开始翻译</span>
-        </div>
-      ) : (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-start gap-2.5">
-          <div className="w-7 h-7 rounded-full bg-amber-500/20 flex items-center justify-center flex-none mt-0.5">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-amber-300"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          </div>
-          <div className="flex-1">
-            <p className="text-sm text-amber-200 font-medium">配置不完整</p>
-            <p className="text-[11px] text-amber-200/70 mt-0.5">{apiKeyValidation}</p>
-          </div>
-        </div>
-      )}
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => void runApiTest()}
+          disabled={apiTest.state === 'running'}
+          className="rounded-lg border border-gray-700 px-3 py-2 text-xs font-medium text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+        >
+          {apiTest.state === 'running' ? '测试中…' : '测试连接'}
+        </button>
+        <span className={`text-xs ${apiTest.state === 'ok' ? 'text-emerald-400' : apiTest.state === 'fail' ? 'text-red-400' : 'text-gray-500'}`}>
+          {apiTest.state === 'ok' && `✓ 可用（${apiTest.msg}）`}
+          {apiTest.state === 'fail' && `✕ ${apiTest.msg}`}
+          {apiTest.state === 'idle' && (cfgError ? cfgError : '保存前建议测一下')}
+        </span>
+      </div>
 
-      <div className="rounded-xl border border-gray-700/50 bg-gray-800/30 p-4 space-y-3">
-        <h3 className="text-xs uppercase tracking-wider font-bold text-gray-500">模型配置</h3>
-
-        <div className="space-y-3">
+      <details className="rounded-lg border border-gray-800 bg-gray-900/40 p-3 [&_summary]:cursor-pointer">
+        <summary className="text-xs text-gray-400">高级：API 地址与模型</summary>
+        <div className="mt-3 space-y-3">
           <div>
-            <label htmlFor="base-url-input" className="text-[11px] uppercase tracking-wider font-bold text-gray-500 mb-1.5 block">
-              API 地址（baseUrl）
-            </label>
-            <input
-              id="base-url-input"
-              type="text"
-              value={localBaseUrl}
-              onChange={(e) => setLocalBaseUrl(e.target.value)}
-              placeholder={currentProvider.defaultBaseUrl}
-              autoComplete="off"
-              spellCheck={false}
-              className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-xs text-white outline-none transition-colors focus:border-blue-500 placeholder:text-gray-600 font-mono"
-            />
-            {currentProvider.customHint && (
-              <p className="mt-1.5 text-[10px] text-gray-500 leading-relaxed">{currentProvider.customHint}</p>
-            )}
+            <label htmlFor="base-url-input" className={labelCls}>API 地址</label>
+            <input id="base-url-input" value={draft.baseUrl} onChange={(e) => set('baseUrl', e.target.value)} placeholder={provider.defaultBaseUrl} spellCheck={false} className={`${inputCls} font-mono text-xs`} />
+            {provider.customHint && <p className="mt-1 text-[11px] text-gray-500">{provider.customHint}</p>}
           </div>
-
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="asr-model-input" className="text-[11px] uppercase tracking-wider font-bold text-gray-500 mb-1.5 block">
-                语音识别 (ASR)
-              </label>
-              <input
-                id="asr-model-input"
-                type="text"
-                value={localAsrModel}
-                onChange={(e) => setLocalAsrModel(e.target.value)}
-                placeholder={currentProvider.defaultAsrModel}
-                autoComplete="off"
-                spellCheck={false}
-                className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-xs text-white outline-none transition-colors focus:border-blue-500 placeholder:text-gray-600 font-mono"
-              />
+              <label htmlFor="asr-model-input" className={labelCls}>语音识别模型</label>
+              <input id="asr-model-input" value={draft.asrModel} onChange={(e) => set('asrModel', e.target.value)} placeholder={provider.defaultAsrModel || '必填'} spellCheck={false} className={`${inputCls} font-mono text-xs`} />
             </div>
             <div>
-              <label htmlFor="llm-model-input" className="text-[11px] uppercase tracking-wider font-bold text-gray-500 mb-1.5 block">
-                翻译 (LLM)
-              </label>
-              <input
-                id="llm-model-input"
-                type="text"
-                value={localLlmModel}
-                onChange={(e) => setLocalLlmModel(e.target.value)}
-                placeholder={currentProvider.defaultLlmModel}
-                autoComplete="off"
-                spellCheck={false}
-                className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-xs text-white outline-none transition-colors focus:border-blue-500 placeholder:text-gray-600 font-mono"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2.5 text-[10px] pt-1">
-            <div className="rounded-md bg-gray-950/50 px-2.5 py-1.5 border border-gray-800/50">
-              <span className="text-gray-500">当前 ASR: </span>
-              <span className="text-gray-200 font-mono">{localAsrModel.trim() || currentProvider.defaultAsrModel}</span>
-            </div>
-            <div className="rounded-md bg-gray-950/50 px-2.5 py-1.5 border border-gray-800/50">
-              <span className="text-gray-500">当前 LLM: </span>
-              <span className="text-gray-200 font-mono">{localLlmModel.trim() || currentProvider.defaultLlmModel}</span>
+              <label htmlFor="llm-model-input" className={labelCls}>翻译模型</label>
+              <input id="llm-model-input" value={draft.llmModel} onChange={(e) => set('llmModel', e.target.value)} placeholder={provider.defaultLlmModel} spellCheck={false} className={`${inputCls} font-mono text-xs`} />
             </div>
           </div>
         </div>
-      </div>
+      </details>
     </div>
   );
 
-  const renderAudioTab = () => {
-    // 系统音频模式(macOS 分支): 是否检测到虚拟声卡,有的话给出使用引导,没有的话给出安装引导
-    const virtualDevice = audioInputs.find((d) => d.isVirtual || isVirtualAudioDevice(d.label));
-    const virtualDeviceLabel = virtualDevice?.label || 'BlackHole 2ch';
+  const loopbackDevice = inputs.find((d) => d.isVirtual || isVirtualAudioDevice(d.label) || isLoopbackInputDevice(d.label));
+  const selectedDevice = inputs.find((d) => d.deviceId === draft.audioInputDeviceId);
+  const selectedIsRaw = !!selectedDevice && (selectedDevice.isVirtual || isLoopbackInputDevice(selectedDevice.label));
 
-    return (
+  const systemHelp = isTauriApp() ? (
+    isWindows ? (
+      <p>直接录制电脑正在播放的声音（腾讯会议、Zoom、Teams、飞书、浏览器、视频都可以），无需安装任何驱动。</p>
+    ) : isMac ? (
+      <>
+        <p>macOS 14.6 及以上：直接录制电脑声音，首次使用会请求「录屏与系统录音」权限，允许即可。</p>
+        <p className="text-gray-500">更早的 macOS：安装免费的 <a className="text-sky-400 underline" href="https://existential.audio/blackhole/" target="_blank" rel="noopener">BlackHole</a>，把会议软件的扬声器设为 BlackHole（或在「音频 MIDI 设置」建多输出设备，这样自己也能听到），本应用会自动识别。{loopbackDevice && <span className="text-emerald-400"> 已检测到：{loopbackDevice.label}</span>}</p>
+      </>
+    ) : (
+      <p>Linux：使用 PulseAudio / PipeWire 的「Monitor of …」设备录制电脑声音。{loopbackDevice ? <span className="text-emerald-400"> 已检测到：{loopbackDevice.label}</span> : ' 未检测到，请在 pavucontrol 中启用。'}</p>
+    )
+  ) : (
+    <>
+      <p>点「开始」后浏览器会弹出共享窗口：</p>
+      <ul className="list-disc pl-5 space-y-1">
+        <li>网页会议（Google Meet、腾讯会议网页版、Zoom 网页版…）：选<b>「Chrome 标签页」</b>→ 选会议所在标签页 → 打开<b>「同时分享标签页音频」</b>。</li>
+        <li>桌面会议软件：选<b>「整个屏幕」</b>→ 打开<b>「同时分享系统音频」</b>（仅 Windows / ChromeOS 的 Chrome、Edge 支持）。</li>
+        <li>macOS 上的桌面会议软件请使用桌面版。</li>
+      </ul>
+    </>
+  );
+
+  const audioTab = (
     <div className="space-y-5">
-      <div>
-        <label className="text-sm font-medium text-gray-300 mb-3 block">音频输入源</label>
-        <div className="grid grid-cols-2 gap-3">
-          <AudioSourceButton
-            active={localAudioSource === 'microphone'}
-            onClick={() => setLocalAudioSource('microphone')}
-            icon={<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>}
-            label="麦克风 / 虚拟声卡"
-            activeClass="bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/20"
-            inactiveClass="bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
-          />
-          <AudioSourceButton
-            active={localAudioSource === 'system'}
-            onClick={() => setLocalAudioSource('system')}
-            icon={<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>}
-            label="系统音频"
-            activeClass="bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-900/20"
-            inactiveClass="bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
-          />
-        </div>
+      <div className="grid grid-cols-2 gap-3">
+        {([
+          ['system', '电脑声音', '会议对方 / 视频 / 网页'],
+          ['microphone', '麦克风', '自己说话 / 现场'],
+        ] as const).map(([id, title, sub]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => set('audioSource', id)}
+            className={`rounded-xl border p-3 text-left transition-colors ${draft.audioSource === id ? 'border-sky-500 bg-sky-500/10' : 'border-gray-700 bg-gray-900 hover:border-gray-600'}`}
+          >
+            <p className="text-sm font-semibold text-white">{title}</p>
+            <p className="text-xs text-gray-500 mt-0.5">{sub}</p>
+          </button>
+        ))}
       </div>
 
-      {localAudioSource === 'microphone' ? (
-        <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4 space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-sm font-medium text-blue-100">像腾讯会议一样先选设备，再开录</p>
-              <p className="mt-1 text-xs leading-relaxed text-blue-100/70">
-                这里可以选具体输入设备，包括 Mac 内建麦克风、耳机麦克风，或 BlackHole 这类虚拟声卡。
-              </p>
+      {draft.audioSource === 'system' ? (
+        <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-4 text-xs text-gray-300 leading-relaxed space-y-2">{systemHelp}</div>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label htmlFor="audio-input-device" className="text-xs font-medium text-gray-400">输入设备</label>
+              <button type="button" onClick={() => void refreshInputs()} className="text-xs text-gray-500 hover:text-gray-200">刷新</button>
             </div>
-            <button
-              type="button"
-              onClick={() => void refreshAudioInputs()}
-              className="shrink-0 rounded-lg border border-blue-400/30 px-3 py-2 text-xs font-medium text-blue-200 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
-              disabled={isLoadingInputs}
-            >
-              {isLoadingInputs ? '刷新中...' : '刷新列表'}
-            </button>
-          </div>
-
-          <div className="space-y-2">
-            <label htmlFor="audio-input-device" className="text-xs font-medium text-gray-300">输入设备</label>
-            <select
-              id="audio-input-device"
-              value={localAudioInputDeviceId}
-              onChange={(e) => setLocalAudioInputDeviceId(e.target.value)}
-              className="w-full rounded-xl border border-gray-700 bg-gray-950 px-3 py-3 text-sm text-white outline-none transition-colors focus:border-blue-500"
-            >
-              <option value="">系统默认输入设备</option>
-              {audioInputs.map((device) => (
-                // 虚拟声卡(BlackHole / VB-Cable / Loopback) 加 "(虚拟声卡)" 后缀,
-                // 让用户一眼看出这个设备可以用来收会议软件输出
-                <option key={device.deviceId} value={device.deviceId}>
-                  {(device.isVirtual || isVirtualAudioDevice(device.label)) ? `${device.label} (虚拟声卡)` : device.label}
+            <select id="audio-input-device" value={draft.audioInputDeviceId} onChange={(e) => set('audioInputDeviceId', e.target.value)} className={inputCls}>
+              <option value="">跟随系统默认</option>
+              {inputs.filter((d) => d.deviceId !== 'default').map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label}{(d.isVirtual || isLoopbackInputDevice(d.label)) ? '（电脑声音）' : ''}
                 </option>
               ))}
             </select>
-            <p className="text-[11px] leading-relaxed text-gray-400">
-              {hasDetectedInputs
-                ? isDefaultDeviceSelected
-                  ? '当前会跟随系统默认输入设备。'
-                  : '已锁定到你选择的这个设备，开始翻译时会直接用它录音。'
-                : '如果列表为空，先点"测试输入"授权浏览器麦克风，再回来刷新列表。'}
-            </p>
           </div>
 
-          {/* 回声消除 / 降噪 / 自动增益 — 会议场景建议开启,采集高质量语音给 ASR 时可关闭 */}
-          <div className="rounded-xl border border-gray-700/60 bg-gray-950/60 p-3 flex items-start justify-between gap-3">
-            <div className="flex-1 min-w-0">
-              <label htmlFor="echo-cancellation-toggle" className="text-sm font-medium text-white cursor-pointer">
-                回声消除 / 降噪 / 自动增益
-              </label>
-              <p className="mt-1 text-[11px] text-gray-400 leading-relaxed">
-                会议场景建议开启,防止麦克风拾取扬声器回声;若在 ASR 训练/录音棚场景采集纯净语音,可关闭以保留原始频谱。
-              </p>
-            </div>
-            <button
-              id="echo-cancellation-toggle"
-              type="button"
-              role="switch"
-              aria-checked={localEchoCancellation}
-              onClick={() => setLocalEchoCancellation((v) => !v)}
-              className={`shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                localEchoCancellation ? 'bg-blue-600' : 'bg-gray-700'
-              }`}
+          <div className="rounded-xl border border-gray-800 bg-gray-900/50 px-4 divide-y divide-gray-800">
+            <Row
+              title="回声消除 / 降噪"
+              desc={selectedIsRaw ? '当前是回环/虚拟声卡设备，已自动关闭（否则会把对方的声音当回声消掉）。' : '外放 + 麦克风时建议开启；戴耳机可以关闭以获得更清晰的识别。'}
             >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  localEchoCancellation ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-
-          <div className="rounded-xl border border-gray-700/60 bg-gray-950/60 p-3 space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-medium text-white">输入测试</p>
-                <p className="mt-1 text-[11px] text-gray-400">
-                  {isTestingInput ? '说话或播放会议声音，确认下面电平条会动。' : LEVEL_IDLE_TEXT}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => void (isTestingInput ? stopInputPreview() : handleStartInputTest())}
-                className={`shrink-0 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
-                  isTestingInput
-                    ? 'bg-red-600 text-white hover:bg-red-500'
-                    : 'bg-emerald-600 text-white hover:bg-emerald-500'
-                }`}
-              >
-                {isTestingInput ? '停止测试' : '测试输入'}
-              </button>
-            </div>
-            <div className="h-2 rounded-full bg-gray-800 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-300 transition-all duration-100"
-                style={{ width: levelWidth }}
-                aria-label="输入电平"
-              />
-            </div>
-            {deviceError && (
-              <p className="text-[11px] text-red-300 whitespace-pre-line">{deviceError}</p>
-            )}
-          </div>
-        </div>
-      ) : (
-        // 系统音频模式:按平台分支引导
-        // macOS WKWebView 不支持 getDisplayMedia,直接告诉用户装 BlackHole
-        // Windows / Linux 走原来的屏幕共享 + 共享系统音频路径
-        <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-4 space-y-3">
-          <p className="text-sm font-medium text-purple-100">系统音频:抓会议软件声音</p>
-          {isMac ? (
-            virtualDevice ? (
-              // 检测到虚拟声卡:给出 ①②③ 三步使用引导
-              <div className="rounded-lg border border-purple-400/30 bg-purple-500/10 p-3 space-y-2 text-[12px] leading-relaxed text-purple-100/90">
-                <p className="text-purple-100 font-medium">已检测到虚拟声卡 <span className="font-mono">{virtualDeviceLabel}</span>,请按下列步骤配置:</p>
-                <ol className="list-decimal pl-5 space-y-1.5 text-purple-100/80">
-                  <li>在会议软件(Zoom / 腾讯会议 / 飞书)的「音频设置」里,把<span className="font-semibold">扬声器/输出</span>选为 <span className="font-mono">{virtualDeviceLabel}</span>;</li>
-                  <li>在本应用上方「输入设备」里也选 <span className="font-mono">{virtualDeviceLabel}</span>,然后切回「麦克风 / 虚拟声卡」模式;</li>
-                  <li>点击主界面的「开始」,本应用就会翻译会议软件里播放的远端声音。</li>
-                </ol>
-                <p className="text-[11px] text-purple-100/60 pt-1">系统设置路径:系统设置 → 声音 → 输出 → 选 {virtualDeviceLabel}。建议同时把 Mac 自己的扬声器也设到虚拟声卡,避免本地外放让麦克风拾取到回声。</p>
-              </div>
-            ) : (
-              // 未检测到虚拟声卡:给出安装引导
-              <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 space-y-2 text-[12px] leading-relaxed text-amber-100/90">
-                <p className="text-amber-100 font-medium">macOS 上本应用无法直接抓取系统音频</p>
-                <p className="text-amber-100/80">
-                  WKWebView 不支持 <code className="px-1 py-0.5 rounded bg-amber-500/15 font-mono text-[11px]">getDisplayMedia</code>,屏幕共享拿不到音频轨。需要借助虚拟声卡把会议软件的声音「路由」到本应用。
-                </p>
-                <p className="text-amber-100/80">推荐安装 <span className="font-semibold">BlackHole</span>(免费开源):</p>
+              <Toggle checked={draft.echoCancellation && !selectedIsRaw} onChange={(v) => set('echoCancellation', v)} />
+            </Row>
+            <div className="py-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-gray-100">输入测试</p>
                 <button
                   type="button"
-                  onClick={() => window.open('https://existential.audio/blackhole/', '_blank', 'noopener,noreferrer')}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-gray-950 font-semibold px-3 py-1.5 text-xs transition-colors"
+                  onClick={() => (testing ? stopPreview() : void startPreview())}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${testing ? 'bg-red-600 hover:bg-red-500' : 'bg-gray-700 hover:bg-gray-600'} text-white`}
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                  打开下载页(existential.audio)
+                  {testing ? '停止' : '测试'}
                 </button>
-                <p className="text-[11px] text-amber-100/70 leading-relaxed pt-1">
-                  安装完 BlackHole 后:① 系统设置 → 声音 → 输出 → 选 BlackHole;② 打开「音频 MIDI 设置」创建多输出设备(同时输出到 BlackHole 和 Mac 扬声器,这样你能听到);③ 会议软件音频输出也切到 BlackHole;④ 回到本应用切到「麦克风 / 虚拟声卡」并选 BlackHole 作为输入。
-                </p>
               </div>
-            )
-          ) : (
-            // Windows / Linux:保留原有屏幕共享说明
-            <div className="space-y-2 text-[12px] text-purple-100/80 leading-relaxed">
-              <p>点击「开始翻译」后会弹出共享窗口,请勾选「共享系统音频」(Chrome / Edge 支持)。</p>
-              <p>如果会议软件本身没有带音频的标签页可以共享,推荐改用 Voicemeeter 这类虚拟声卡 + 「麦克风 / 虚拟声卡」模式,体验更稳。</p>
+              <div className="mt-2 h-1.5 rounded-full bg-gray-800 overflow-hidden">
+                <div className="h-full rounded-full bg-emerald-400 transition-[width] duration-75" style={{ width: `${Math.round(level * 100)}%` }} />
+              </div>
+              {deviceError && <p className="mt-2 text-xs text-red-400 whitespace-pre-line">{deviceError}</p>}
             </div>
-          )}
+          </div>
         </div>
       )}
-    </div>
-  );
-  };
 
-  const renderLanguageTab = () => (
-    <div className="space-y-4">
-      <p className="text-sm text-gray-300">选择两种翻译语言。每次说出口的话会自动识别方向。</p>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-        {LANGUAGES.map((lang) => {
-          const isSelected = selected.includes(lang);
-          const isFirstSlot = selected.length === 0 || selected[0] === lang;
-          return (
+      <div>
+        <p className={labelCls}>环境噪音</p>
+        <div className="grid grid-cols-3 gap-2">
+          {([
+            ['low', '嘈杂', '只收清晰人声'],
+            ['medium', '一般', '推荐'],
+            ['high', '安静', '小声也能收到'],
+          ] as const).map(([id, t, d]) => (
             <button
-              key={lang}
+              key={id}
               type="button"
-              onClick={() => handleToggle(lang)}
-              className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-all ${
-                isSelected
-                  ? isFirstSlot
-                    ? 'bg-blue-600/20 border-blue-500 text-blue-100'
-                    : 'bg-emerald-600/20 border-emerald-500 text-emerald-100'
-                  : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-              }`}
+              onClick={() => set('vadSensitivity', id)}
+              className={`rounded-lg border px-3 py-2 text-left ${draft.vadSensitivity === id ? 'border-sky-500 bg-sky-500/10' : 'border-gray-700 hover:border-gray-600'}`}
             >
-              {lang}
+              <p className="text-sm text-white">{t}</p>
+              <p className="text-[11px] text-gray-500">{d}</p>
             </button>
-          );
-        })}
+          ))}
+        </div>
+        <p className="mt-1.5 text-[11px] text-gray-500">噪音（键盘、空调、咳嗽）被误翻译时选「嘈杂」；小声说话收不到时选「安静」。</p>
       </div>
     </div>
   );
 
-  return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-gray-950/70 backdrop-blur-md p-4 animate-in fade-in duration-150">
-      <div
-        ref={modalRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settings-title"
-        className="bg-gray-900 border border-gray-700/60 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col fade-up"
-      >
-        <header className="flex-none flex items-center justify-between p-5 border-b border-gray-800">
-          <h2 id="settings-title" className="text-lg font-bold text-white">会话设置</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="关闭"
-            className="p-1.5 rounded-md text-gray-500 hover:text-white hover:bg-gray-800 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </header>
-
-        <nav className="flex-none flex border-b border-gray-800" role="tablist">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-3 text-xs font-medium transition-colors ${
-                activeTab === tab.id
-                  ? 'text-blue-300 border-b-2 border-blue-500'
-                  : 'text-gray-500 hover:text-gray-300'
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-            </button>
-          ))}
-        </nav>
-
-        <div className="flex-1 overflow-y-auto p-5">
-          {activeTab === 'connection' && renderConnectionTab()}
-          {activeTab === 'audio' && renderAudioTab()}
-          {activeTab === 'language' && renderLanguageTab()}
+  const languageTab = (
+    <div className="space-y-5">
+      <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
+        <div>
+          <label htmlFor="lang-a" className={labelCls}>语言 A</label>
+          <select id="lang-a" value={draft.langA} onChange={(e) => set('langA', e.target.value)} className={inputCls}>
+            {LANGUAGES.map((l) => <option key={l.id} value={l.id} disabled={l.id === draft.langB}>{l.label}</option>)}
+          </select>
         </div>
+        <button type="button" title="交换" onClick={() => setDraft((d) => ({ ...d, langA: d.langB, langB: d.langA }))} className="mb-1 rounded-lg px-2 py-2 text-gray-400 hover:text-white hover:bg-gray-800">⇄</button>
+        <div>
+          <label htmlFor="lang-b" className={labelCls}>语言 B</label>
+          <select id="lang-b" value={draft.langB} onChange={(e) => set('langB', e.target.value)} className={inputCls}>
+            {LANGUAGES.map((l) => <option key={l.id} value={l.id} disabled={l.id === draft.langA}>{l.label}</option>)}
+          </select>
+        </div>
+      </div>
+      <p className="text-xs text-gray-500 -mt-2">自动识别说的是哪种语言并翻译成另一种。其他语言统一翻译成语言 B。</p>
 
-        <footer className="flex-none flex items-center justify-end gap-2 p-4 border-t border-gray-800">
+      <div>
+        <label htmlFor="glossary" className={labelCls}>术语表 / 热词（可选）</label>
+        <textarea
+          id="glossary"
+          rows={6}
+          value={draft.glossary}
+          onChange={(e) => set('glossary', e.target.value)}
+          placeholder={'每行一个，例如：\nOpenCSG\n大模型=LLM\n张总=Mr. Zhang\nKubernetes'}
+          className={`${inputCls} font-mono text-xs leading-relaxed`}
+        />
+        <p className="mt-1.5 text-[11px] text-gray-500">人名、公司名、产品名、行业术语写在这里，翻译会固定用这个译法，并帮助纠正识别错字。</p>
+      </div>
+    </div>
+  );
+
+  const displayTab = (
+    <div className="rounded-xl border border-gray-800 bg-gray-900/50 px-4 divide-y divide-gray-800">
+      <Row title="字号" desc={`${draft.overlayFontSize}px`}>
+        <input type="range" min={14} max={40} step={1} value={draft.overlayFontSize} onChange={(e) => set('overlayFontSize', Number(e.target.value))} className="w-40 accent-sky-500" />
+      </Row>
+      <Row title="背景不透明度" desc={`${Math.round(draft.overlayOpacity * 100)}%`}>
+        <input type="range" min={0.2} max={1} step={0.02} value={draft.overlayOpacity} onChange={(e) => set('overlayOpacity', Number(e.target.value))} className="w-40 accent-sky-500" />
+      </Row>
+      <Row title="显示原文" desc="译文上方显示识别出的原文（小字）">
+        <Toggle checked={draft.overlayShowOriginal} onChange={(v) => set('overlayShowOriginal', v)} />
+      </Row>
+      <Row title="没人说话时自动淡出" desc={draft.overlayAutoHideSec > 0 ? `${draft.overlayAutoHideSec} 秒后淡出，只留一个小圆点；鼠标移上去或有新字幕时自动出现` : '始终显示'}>
+        <select value={draft.overlayAutoHideSec} onChange={(e) => set('overlayAutoHideSec', Number(e.target.value))} className="rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-white">
+          <option value={0}>不淡出</option>
+          <option value={4}>4 秒</option>
+          <option value={8}>8 秒</option>
+          <option value={15}>15 秒</option>
+          <option value={30}>30 秒</option>
+        </select>
+      </Row>
+      {isTauriApp() && (
+        <Row title="共享屏幕 / 录屏时隐藏" desc="开启后，你在会议里共享屏幕时，对方看不到字幕窗（macOS / Windows 10 2004+）">
+          <Toggle checked={draft.overlayHideInScreenShare} onChange={(v) => set('overlayHideInScreenShare', v)} />
+        </Row>
+      )}
+    </div>
+  );
+
+  const content = (
+    <>
+      <nav className="flex-none flex gap-1 border-b border-gray-800 px-3" role="tablist">
+        {TABS.map((t) => (
           <button
+            key={t.id}
             type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-gray-800 transition-colors"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={`px-3 py-2.5 text-sm transition-colors border-b-2 -mb-px ${tab === t.id ? 'text-white border-sky-500' : 'text-gray-500 border-transparent hover:text-gray-300'}`}
           >
-            取消
+            {t.label}
           </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={!isReady}
-            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold disabled:opacity-50 transition-colors"
-          >
-            保存
-          </button>
-        </footer>
+        ))}
+      </nav>
+      <div className="flex-1 overflow-y-auto p-5">
+        {tab === 'connection' && connectionTab}
+        {tab === 'audio' && audioTab}
+        {tab === 'language' && languageTab}
+        {tab === 'display' && displayTab}
+      </div>
+      <footer className="flex-none flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-800">
+        {dirty && <span className="mr-auto text-xs text-amber-300/80">有未保存的修改</span>}
+        {embedded ? (
+          dirty && <button type="button" onClick={() => setDraft(settings)} className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-800">还原</button>
+        ) : (
+          <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:bg-gray-800">取消</button>
+        )}
+        <button
+          type="button"
+          onClick={save}
+          disabled={!dirty || draft.langA === draft.langB}
+          className="px-5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-sm font-semibold disabled:opacity-40"
+        >
+          保存
+        </button>
+      </footer>
+    </>
+  );
+
+  if (embedded) return <div className="flex flex-col h-full min-h-0">{content}</div>;
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose?.(); }}>
+      <div role="dialog" aria-modal="true" aria-label="设置" className="bg-gray-900 border border-gray-700/60 rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] flex flex-col">
+        {content}
       </div>
     </div>
   );

@@ -66,6 +66,30 @@ export function isVirtualAudioDevice(label: string): boolean {
 }
 
 /**
+ * 判断输入设备是否是"系统声音回环"类设备：
+ * PulseAudio/PipeWire 的 "Monitor of …"、Windows 的「立体声混音 / Stereo Mix」、
+ * VB-Cable 的 "CABLE Output"、BlackHole 等。
+ * 这类设备采到的是扬声器里播放的声音，不能开回声消除/降噪（会把人声当回声消掉）。
+ */
+export function isLoopbackInputDevice(label: string): boolean {
+  if (!label) return false;
+  const l = label.toLowerCase();
+  return [
+    'monitor of',
+    '.monitor',
+    'stereo mix',
+    '立体声混音',
+    '混音',
+    'what u hear',
+    'wave out mix',
+    'cable output',
+    'blackhole',
+    'loopback',
+    'soundflower',
+  ].some((kw) => l.includes(kw));
+}
+
+/**
  * 把 navigator.mediaDevices.enumerateDevices() 的结果规整成 UI 直接消费的列表。
  *
  * 关键改动（行为变更）：

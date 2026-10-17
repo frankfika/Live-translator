@@ -25,6 +25,13 @@ export interface AsrRequest {
   /** 16kHz mono PCM WAV blob */
   audio: Blob;
   cfg: ProviderConfig;
+  /** 超时 / 停止时中断请求 */
+  signal?: AbortSignal;
+}
+
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
 }
 
 export interface TranslateRequest {
@@ -32,6 +39,9 @@ export interface TranslateRequest {
   systemInstruction: string;
   cfg: ProviderConfig;
   onChunk: (chunk: string) => void;
+  /** 最近几轮"原文→译文"，作为上下文提升连贯性和术语一致性 */
+  history?: ChatTurn[];
+  signal?: AbortSignal;
 }
 
 export interface Provider {

@@ -25,8 +25,3 @@ export enum ConnectionStatus {
   CONNECTED = 'CONNECTED',
   ERROR = 'ERROR',
 }
-
-export interface AudioVisualizerProps {
-  stream: MediaStream | null;
-  isActive: boolean;
-}

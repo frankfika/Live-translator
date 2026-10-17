@@ -9,7 +9,7 @@
 - 🤖 **多 Provider** — SiliconFlow / 阿里云百炼 / 智谱 BigModel / 自定义 OpenAI 兼容
 - 🌐 **14 种语言双向翻译** — 中英日韩法德西俄阿越土印等
 - ⚡ **流式输出** — VAD 检测说话停顿，逐字显示
-- 🪟 **副屏悬浮字幕** — `Cmd/Ctrl+Shift+S` 唤出
+- 🪟 **悬浮字幕条** — 透明置顶、自动淡出、可锁定鼠标穿透，`Cmd/Ctrl+Shift+S` 显示/隐藏
 - 📦 **三平台打包** — macOS .dmg / Windows .msi / Linux .deb & AppImage
 - 💾 **本地数据库** — 会话记录自动存 SQLite
 
@@ -77,16 +77,14 @@
 
 | 键 | 动作 |
 | --- | --- |
-| 空格 | 开始/停止 |
-| `S` | 打开设置 |
-| `E` | 导出当前会话 |
-| `Cmd/Ctrl+Shift+S` | 显示/隐藏副屏字幕窗（全局） |
-| `Cmd/Ctrl+Shift+R` | 全局录音切换 |
+| `Cmd/Ctrl+Shift+S` | 显示/隐藏悬浮字幕（全局） |
+| `Cmd/Ctrl+Shift+R` | 开始/停止翻译（全局） |
+| `Cmd/Ctrl+Shift+L` | 锁定/解锁字幕条（鼠标穿透） |
 
 ## 已知限制
 
-- **macOS 系统音频**：浏览器 `getDisplayMedia({ audio: true })` 在 macOS WKWebView 下抓不到系统音频（Tauri 2 当前限制）。需要抓会议 / 视频声音时，**装 BlackHole 虚拟声卡并把会议软件输出设到 BlackHole**，然后在「设置 → 音频」选 BlackHole 作为输入设备。Windows 没有这个限制。
-- **副屏定位**：当前 `Cmd+Shift+S` 唤出的副屏字幕窗固定定位到主屏底部，跨屏场景未自动检测（已知短板，注释里留了 future 扩展点）。
+- **macOS 13 及更早**：系统没有进程回环 API，「电脑声音」需要 BlackHole 虚拟声卡（应用会自动识别）。macOS 14.6+ 和 Windows 原生支持。
+- **共享屏幕隐藏**：依赖系统 API（macOS `NSWindowSharingNone`、Windows `WDA_EXCLUDEFROMCAPTURE`），Linux 不支持；部分会议软件的“共享窗口”模式本来就不会拍到字幕窗。
 
 ## 开发
 

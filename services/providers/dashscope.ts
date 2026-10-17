@@ -4,6 +4,7 @@ import {
   asHttpError,
   streamChatCompletion,
   apiKeyLooksValid,
+  thinkingOffBody,
 } from './siliconflow';
 
 /**
@@ -62,7 +63,7 @@ export class DashScopeProvider implements Provider {
     return null;
   }
 
-  async transcribe({ audio, cfg }: AsrRequest): Promise<string> {
+  async transcribe({ audio, cfg, signal }: AsrRequest): Promise<string> {
     // DashScope paraformer-v2 是同步 file-upload 模式
     // 文档: POST /api/v1/services/audio/asr/transcription
     // 用 multipart/form-data，file 字段为二进制音频
@@ -78,6 +79,7 @@ export class DashScopeProvider implements Provider {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
       body: formData,
+      signal,
     });
 
     if (!response.ok) {
@@ -117,7 +119,7 @@ export class DashScopeProvider implements Provider {
     throw new Error('DashScope 异步转写超时（>60s）');
   }
 
-  async translate({ text, systemInstruction, onChunk, cfg }: TranslateRequest): Promise<void> {
+  async translate({ text, systemInstruction, onChunk, cfg, history, signal }: TranslateRequest): Promise<void> {
     // OpenAI 兼容模式：必须把 baseUrl 从 /api/v1 切到 /compatible-mode/v1
     // 详细 case 拆解见 rewriteDashScopeBaseUrl 上方注释
     const baseUrl = rewriteDashScopeBaseUrl(cfg.baseUrl);
@@ -129,6 +131,9 @@ export class DashScopeProvider implements Provider {
       systemInstruction,
       userText: text,
       onChunk,
+      history,
+      signal,
+      extraBody: thinkingOffBody(cfg.llmModel),
     });
   }
 }

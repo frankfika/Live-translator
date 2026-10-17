@@ -1,28 +1,67 @@
+mod audio;
 mod commands;
 mod db;
 mod models;
 mod utils;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, WebviewWindow,
+    WindowEvent,
 };
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+/// 悬浮字幕窗（同时是音频引擎所在窗口）
+const OVERLAY: &str = "main";
+/// 控制面板（设置 + 历史记录），按需显示
+const PANEL: &str = "panel";
+
+#[cfg(target_os = "macos")]
+const MOD_LABEL: &str = "⇧⌘";
+#[cfg(not(target_os = "macos"))]
+const MOD_LABEL: &str = "Ctrl+Shift+";
+
+/// 鼠标穿透（锁定）状态。锁定后悬浮窗不接收任何点击，只能用快捷键 / 托盘解锁。
+#[derive(Default)]
+struct OverlayState {
+    click_through: AtomicBool,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // 初始化数据库（错误向上抛，由 main.rs 打印 + 退出）
-    let database = Arc::new(db::connection::Database::new().map_err(|e| {
-        format!("Failed to initialize database: {e}")
-    })?);
+    let database = Arc::new(
+        db::connection::Database::new()
+            .map_err(|e| format!("Failed to initialize database: {e}"))?,
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let s = shortcut.into_string().to_lowercase();
+                    if s.ends_with("keys") {
+                        toggle_overlay(app);
+                    } else if s.ends_with("keyr") {
+                        let _ = app.emit("global-shortcut-record", ());
+                    } else if s.ends_with("keyl") {
+                        let state = app.state::<OverlayState>();
+                        let next = !state.click_through.load(Ordering::SeqCst);
+                        apply_click_through(app, next);
+                    }
+                })
+                .build(),
+        )
         .manage(database)
+        .manage(audio::SystemAudioState::default())
+        .manage(OverlayState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -32,86 +71,132 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
             }
 
+            // macOS：做成菜单栏应用，不占 Dock，不打扰
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // ========== 悬浮窗初始位置：主屏底部居中 ==========
+            if let Some(overlay) = app.get_webview_window(OVERLAY) {
+                let _ = place_overlay_bottom_center(&overlay);
+                let _ = overlay.show();
+            }
+
             // ========== 系统托盘 ==========
-            let show_main_item = MenuItem::with_id(
+            let toggle_overlay_item = MenuItem::with_id(
                 app,
-                "show_main",
-                "显示主窗口",
+                "toggle_overlay",
+                format!("显示/隐藏字幕    {MOD_LABEL}S"),
                 true,
                 None::<&str>,
             )?;
-            let toggle_subtitle_item = MenuItem::with_id(
+            let record_item = MenuItem::with_id(
                 app,
-                "toggle_subtitle",
-                "显示/隐藏字幕",
+                "record",
+                format!("开始/停止翻译    {MOD_LABEL}R"),
                 true,
                 None::<&str>,
             )?;
-            let quit_item = MenuItem::with_id(
+            let lock_item = CheckMenuItem::with_id(
                 app,
-                "quit",
-                "退出",
+                "lock",
+                format!("锁定字幕（鼠标穿透）    {MOD_LABEL}L"),
                 true,
+                false,
                 None::<&str>,
             )?;
+            let panel_item = MenuItem::with_id(app, "panel", "设置与记录…", true, None::<&str>)?;
+            let reset_pos_item =
+                MenuItem::with_id(app, "reset_pos", "字幕回到屏幕底部", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let sep = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
                 app,
-                &[&show_main_item, &toggle_subtitle_item, &quit_item],
+                &[
+                    &record_item,
+                    &toggle_overlay_item,
+                    &lock_item,
+                    &sep,
+                    &panel_item,
+                    &reset_pos_item,
+                    &sep2,
+                    &quit_item,
+                ],
             )?;
 
-            let tray_app_handle = app.handle().clone();
-            TrayIconBuilder::new()
+            let lock_item_handle = lock_item.clone();
+            TrayIconBuilder::with_id("main-tray")
+                .tooltip("AI 同声传译")
                 .menu(&menu)
+                .show_menu_on_left_click(false)
                 .icon(
                     app.default_window_icon()
                         .cloned()
                         .ok_or("default window icon is required for tray")?,
                 )
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "show_main" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                    "toggle_overlay" => toggle_overlay(app),
+                    "record" => {
+                        let _ = app.emit("global-shortcut-record", ());
+                    }
+                    "lock" => {
+                        let state = app.state::<OverlayState>();
+                        let next = !state.click_through.load(Ordering::SeqCst);
+                        apply_click_through(app, next);
+                        let _ = lock_item_handle.set_checked(next);
+                    }
+                    "panel" => show_panel(app, None),
+                    "reset_pos" => {
+                        if let Some(w) = app.get_webview_window(OVERLAY) {
+                            let _ = place_overlay_bottom_center(&w);
+                            let _ = w.show();
                         }
                     }
-                    "toggle_subtitle" => {
-                        if let Some(window) = app.get_webview_window("subtitle") {
-                            toggle_subtitle_window(&window);
-                        }
-                    }
-                    "quit" => {
-                        app.exit(0);
-                    }
+                    "quit" => app.exit(0),
                     _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // 左键单击托盘：显示/隐藏字幕
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        toggle_overlay(tray.app_handle());
+                    }
                 })
                 .build(app)?;
 
-            // 让 tray 句柄保持在作用域内（目前未用，但保留以备后用）
-            let _ = tray_app_handle;
-
             // ========== 全局快捷键 ==========
+            let gs = app.global_shortcut();
+            for key in ["CommandOrControl+Shift+S", "CommandOrControl+Shift+R", "CommandOrControl+Shift+L"] {
+                if let Err(e) = gs.register(key) {
+                    // 被其他软件占用时不要让整个 app 起不来
+                    eprintln!("Failed to register shortcut {key}: {e}");
+                }
+            }
 
-            // Cmd/Ctrl+Shift+S — 副屏字幕 toggle
-            let app_handle = app.handle().clone();
-            app.global_shortcut()
-                .on_shortcut(
-                    "CommandOrControl+Shift+S",
-                    move |_app, _event, _shortcut| {
-                        if let Some(window) = app_handle.get_webview_window("subtitle") {
-                            toggle_subtitle_window(&window);
-                        }
-                    },
-                )?;
-
-            // Cmd/Ctrl+Shift+R — 全局录音 toggle
-            let app_handle2 = app.handle().clone();
-            app.global_shortcut()
-                .on_shortcut(
-                    "CommandOrControl+Shift+R",
-                    move |_app, _event, _shortcut| {
-                        let _ = app_handle2.emit("global-shortcut-record", ());
-                    },
-                )?;
+            // 控制面板关闭 = 隐藏（引擎在悬浮窗里，面板随时可再打开）
+            if let Some(panel) = app.get_webview_window(PANEL) {
+                let p = panel.clone();
+                panel.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = p.hide();
+                    }
+                });
+            }
+            // 悬浮窗关闭 = 隐藏到托盘
+            if let Some(overlay) = app.get_webview_window(OVERLAY) {
+                let o = overlay.clone();
+                overlay.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = o.hide();
+                    }
+                });
+            }
 
             Ok(())
         })
@@ -122,45 +207,148 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             commands::transcripts::save_transcript,
             commands::transcripts::get_session_transcripts,
             commands::transcripts::export_session,
+            audio::system_audio_supported,
+            audio::start_system_audio,
+            audio::stop_system_audio,
+            open_panel,
+            show_overlay,
+            hide_overlay,
+            set_click_through,
+            get_click_through,
+            set_hide_in_screen_share,
+            resize_overlay,
         ])
         .run(tauri::generate_context!())?;
 
     Ok(())
 }
 
-/// 显示 / 隐藏副屏字幕窗。
-/// 隐藏时直接 hide；显示前先定位到主屏底部（宽度 = 主屏宽，高度 = 120）。
-/// 未来可扩展为：检测当前焦点窗口所在的 monitor，支持副屏定位。
-fn toggle_subtitle_window(window: &WebviewWindow) {
-    match window.is_visible() {
-        Ok(true) => {
-            let _ = window.hide();
-        }
-        Ok(false) => {
-            if let Err(e) = position_subtitle_at_bottom(window) {
-                eprintln!("Failed to position subtitle window: {e}");
-            }
-            let _ = window.show();
-        }
-        Err(e) => {
-            eprintln!("Failed to read subtitle visibility: {e}");
+fn toggle_overlay(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(OVERLAY) {
+        if w.is_visible().unwrap_or(false) {
+            let _ = w.hide();
+        } else {
+            let _ = w.show();
         }
     }
 }
 
-/// 把副屏字幕窗定位到主屏底部，全宽，120px 高。
-/// Future: 找当前焦点窗口所在的 monitor，定位到那块屏幕底部。
-fn position_subtitle_at_bottom(window: &WebviewWindow) -> tauri::Result<()> {
-    if let Some(monitor) = window.primary_monitor()? {
-        let screen_size = monitor.size();
-        let subtitle_height: u32 = 120;
-        let y = (screen_size.height as i32).saturating_sub(subtitle_height as i32);
+fn show_panel(app: &AppHandle, tab: Option<String>) {
+    if let Some(w) = app.get_webview_window(PANEL) {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        if let Some(tab) = tab {
+            let _ = app.emit_to(PANEL, "panel-tab", tab);
+        }
+    }
+}
 
-        window.set_position(Position::Physical(PhysicalPosition { x: 0, y }))?;
-        window.set_size(Size::Physical(PhysicalSize {
-            width: screen_size.width,
-            height: subtitle_height,
-        }))?;
+fn apply_click_through(app: &AppHandle, enabled: bool) {
+    let state = app.state::<OverlayState>();
+    state.click_through.store(enabled, Ordering::SeqCst);
+    if let Some(w) = app.get_webview_window(OVERLAY) {
+        let _ = w.set_ignore_cursor_events(enabled);
+    }
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_tooltip(Some(if enabled {
+            if cfg!(target_os = "macos") {
+                "AI 同声传译（字幕已锁定，⇧⌘L 解锁）"
+            } else {
+                "AI 同声传译（字幕已锁定，Ctrl+Shift+L 解锁）"
+            }
+        } else {
+            "AI 同声传译"
+        }));
+    }
+    let _ = app.emit("click-through-changed", enabled);
+}
+
+/// 悬浮窗放到当前主屏底部居中，宽度取屏幕 60%（640~1100 逻辑像素）
+fn place_overlay_bottom_center(window: &WebviewWindow) -> tauri::Result<()> {
+    let monitor = window
+        .current_monitor()?
+        .or(window.primary_monitor()?);
+    if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let size = monitor.size().to_logical::<f64>(scale);
+        let origin = monitor.position().to_logical::<f64>(scale);
+        let width = (size.width * 0.6).clamp(640.0, 1100.0).min(size.width - 40.0);
+        let height = window
+            .outer_size()
+            .map(|s| s.to_logical::<f64>(scale).height)
+            .unwrap_or(160.0)
+            .max(120.0);
+        let x = origin.x + (size.width - width) / 2.0;
+        // 留出 Dock / 任务栏的高度
+        let y = origin.y + size.height - height - 72.0;
+        window.set_size(Size::Logical(LogicalSize { width, height }))?;
+        window.set_position(Position::Logical(LogicalPosition { x, y }))?;
     }
     Ok(())
+}
+
+#[tauri::command]
+fn open_panel(app: AppHandle, tab: Option<String>) {
+    show_panel(&app, tab);
+}
+
+#[tauri::command]
+fn show_overlay(app: AppHandle) {
+    if let Some(w) = app.get_webview_window(OVERLAY) {
+        let _ = w.show();
+    }
+}
+
+#[tauri::command]
+fn hide_overlay(app: AppHandle) {
+    if let Some(w) = app.get_webview_window(OVERLAY) {
+        let _ = w.hide();
+    }
+}
+
+#[tauri::command]
+fn set_click_through(app: AppHandle, enabled: bool) {
+    apply_click_through(&app, enabled);
+}
+
+#[tauri::command]
+fn get_click_through(state: tauri::State<'_, OverlayState>) -> bool {
+    state.click_through.load(Ordering::SeqCst)
+}
+
+/// 屏幕共享 / 录屏时隐藏悬浮窗和面板（macOS: NSWindowSharingNone；Windows: WDA_EXCLUDEFROMCAPTURE）
+#[tauri::command]
+fn set_hide_in_screen_share(app: AppHandle, enabled: bool) {
+    for label in [OVERLAY, PANEL] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.set_content_protected(enabled);
+        }
+    }
+}
+
+/// 悬浮窗按内容调整高度（底边固定不动，往上长）
+#[tauri::command]
+fn resize_overlay(app: AppHandle, height: f64) {
+    if let Some(w) = app.get_webview_window(OVERLAY) {
+        let Ok(scale) = w.scale_factor() else { return };
+        let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) else {
+            return;
+        };
+        let pos = pos.to_logical::<f64>(scale);
+        let size = size.to_logical::<f64>(scale);
+        let height = height.clamp(56.0, 600.0);
+        if (size.height - height).abs() < 1.0 {
+            return;
+        }
+        let bottom = pos.y + size.height;
+        let _ = w.set_size(Size::Logical(LogicalSize {
+            width: size.width,
+            height,
+        }));
+        let _ = w.set_position(Position::Logical(LogicalPosition {
+            x: pos.x,
+            y: bottom - height,
+        }));
+    }
 }

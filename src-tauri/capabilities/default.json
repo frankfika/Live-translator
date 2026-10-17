@@ -4,7 +4,7 @@
   "description": "enables the default permissions",
   "windows": [
     "main",
-    "subtitle"
+    "panel"
   ],
   "permissions": [
     "core:default",
@@ -12,6 +12,11 @@
     "core:window:default",
     "core:webview:default",
     "core:app:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-start-resize-dragging",
     "global-shortcut:default"
   ]
 }

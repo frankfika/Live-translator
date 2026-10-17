@@ -11,29 +11,42 @@
 | **macOS** | Apple Silicon | `ai-interpreter-v1.0.0-macOS-aarch64.dmg` (5.4 MB) |
 | Windows / Linux | x86_64 | CI 构建中，待 `gh auth refresh -s workflow` 后自动追加 |
 
-## 🔧 v1.0.0 修复（针对"第三方会议无效"问题）
+## ✨ v1.1：悬浮字幕，用的时候几乎感觉不到它
 
-v1.0.0 完整修复了用户在 Zoom/腾讯会议/Teams 等第三方会议软件中使用时遇到的音频失效问题：
+**不再是一个要盯着看的页面。** 打开后只有屏幕底部一条半透明字幕条 + 菜单栏/托盘图标：
 
-| 症状 | 根因 | 修复 |
-|---|---|---|
-| **macOS 麦克风收音失败** | 缺失 `NSMicrophoneUsageDescription`，WKWebView 静默拒绝 | 新增 `src-tauri/Info.plist` |
-| **会议回声啸叫** | `echoCancellation/noiseSuppression/autoGainControl` 全部关闭 | 默认开启 + UI 提供开关 |
-| **macOS "系统音频"无效** | WKWebView 不支持 `getDisplayMedia` | macOS 引导用 BlackHole 虚拟声卡；Windows 保留 getDisplayMedia |
-| **只有内建麦的 Mac 设备列表空** | `default`/`communications` 设备被过滤 | 保留并显示为"系统默认输入设备" |
-| **自定义 OpenAI baseUrl 被拦截** | CSP `connect-src` 固定白名单 | 改为 `https:` / `wss:` 通配 |
+- 🪟 **悬浮字幕条** — 置顶、透明、可拖动、左右边缘可拉宽，高度随字幕自动伸缩
+- 🌫 **没人说话时自动淡出** — 只留一个小圆点；有新字幕或鼠标移上去才出现
+- 🖱 **锁定 / 鼠标穿透** — `⇧⌘L`（Windows: `Ctrl+Shift+L`）锁定后不挡会议软件按钮，再按一次解锁
+- 🙈 **共享屏幕时对方看不到** — 字幕窗默认不出现在屏幕共享 / 录屏里（macOS、Windows 10 2004+）
+- 🍎 macOS 不占 Dock，只在菜单栏；关窗口 = 隐藏到托盘
 
-完整修复报告见 [AUDIO-FIX-REPORT.md](AUDIO-FIX-REPORT.md)，发布说明见 [RELEASE-NOTES-v1.0.0.md](RELEASE-NOTES-v1.0.0.md)。
+**会议 / 浏览器 / 视频的声音直接抓，不用装虚拟声卡：**
 
-## 特性
+| 平台 | 「电脑声音」模式 |
+|---|---|
+| Windows | WASAPI 回环原生采集，腾讯会议 / Zoom / Teams / 飞书 / 浏览器都能直接翻 |
+| macOS 14.6+ | Core Audio 系统录音原生采集（首次需允许「录屏与系统录音」权限） |
+| 更早的 macOS | 自动识别 BlackHole 等虚拟声卡 |
+| Linux | 自动使用 PulseAudio / PipeWire 的 Monitor 设备 |
+| 浏览器版 | 共享会议标签页音频；字幕用画中画小窗悬浮在所有窗口之上 |
 
-- 🎙 **多种音频输入** — 内建/外接麦克风、USB 麦、蓝牙耳机、虚拟声卡（BlackHole / VB-Cable）；系统音频（Windows: getDisplayMedia 抓会议声音；macOS: 需用 BlackHole 虚拟声卡）
-- 🤖 **多 Provider 切换** — SiliconFlow（默认）、阿里云百炼 (DashScope)、智谱 BigModel (GLM)、自定义 OpenAI 兼容服务
-- 🌐 **多语种双向翻译** — 中英日韩法德西俄阿等 14 种语言，自动识别方向
-- ⚡ **流式输出** — VAD 检测说话停顿，逐字显示译文
-- 🪟 **副屏悬浮字幕** — `Cmd/Ctrl+Shift+S` 唤出 always-on-top 字幕窗
-- 📦 **三平台打包** — macOS .dmg / Windows .msi / Linux .deb & AppImage
-- 🔌 **离线设置** — Key 存本地 SQLite（settings 表），不上传
+**噪音和准确度：**
+
+- 自适应 VAD：自动跟踪环境底噪，空调 / 键盘 / 咳嗽不再触发；保留 300ms 预录不丢首字；换气停顿不再把一句话切碎
+- 过滤 ASR 幻觉："谢谢观看""字幕由…提供"、纯语气词、SenseVoice 标签和表情符号不再上屏
+- 翻译带最近 3 句上下文，提示模型结合上下文纠正同音错字；支持**术语表**固定人名 / 产品名译法
+- Qwen3 自动关闭思考模式，延迟更低
+- 段落排队处理不再丢句；单句网络失败不再中断整个会话
+- 选中虚拟声卡 / 回环设备时自动关闭回声消除（否则会把对方的声音当回声消掉）
+
+| 快捷键（全局） | 作用 |
+|---|---|
+| `⇧⌘R` / `Ctrl+Shift+R` | 开始 / 停止 |
+| `⇧⌘S` / `Ctrl+Shift+S` | 显示 / 隐藏字幕条 |
+| `⇧⌘L` / `Ctrl+Shift+L` | 锁定（鼠标穿透）/ 解锁 |
+
+设置与完整记录：点字幕条上的齿轮，或托盘菜单「设置与记录…」。
 
 ## 快速开始
 

@@ -43,7 +43,7 @@ export class CustomProvider implements Provider {
     return null;
   }
 
-  async transcribe({ audio, cfg }: AsrRequest): Promise<string> {
+  async transcribe({ audio, cfg, signal }: AsrRequest): Promise<string> {
     if (!cfg.asrModel.trim()) {
       throw new Error(
         'Custom provider 未配置 ASR 模型名 — 请在设置里填写（如 whisper-1）。如果只想做翻译，' +
@@ -59,6 +59,7 @@ export class CustomProvider implements Provider {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
       body: formData,
+      signal,
     });
 
     if (!response.ok) {
@@ -68,7 +69,7 @@ export class CustomProvider implements Provider {
     return (result.text || '').trim();
   }
 
-  async translate({ text, systemInstruction, onChunk, cfg }: TranslateRequest): Promise<void> {
+  async translate({ text, systemInstruction, onChunk, cfg, history, signal }: TranslateRequest): Promise<void> {
     if (!cfg.llmModel.trim()) {
       throw new Error('当前 Provider 未配置翻译模型名。请在设置里填写。');
     }
@@ -80,6 +81,8 @@ export class CustomProvider implements Provider {
       systemInstruction,
       userText: text,
       onChunk,
+      history,
+      signal,
     });
   }
 }

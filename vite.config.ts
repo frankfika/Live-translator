@@ -19,7 +19,6 @@ export default defineConfig(({ mode }) => {
         rollupOptions: {
           input: {
             main: path.resolve(__dirname, 'index.html'),
-            subtitle: path.resolve(__dirname, 'subtitle.html'),
           },
           output: {
             manualChunks: {

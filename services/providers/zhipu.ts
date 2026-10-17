@@ -39,7 +39,7 @@ export class ZhipuProvider implements Provider {
     return null;
   }
 
-  async transcribe({ audio, cfg }: AsrRequest): Promise<string> {
+  async transcribe({ audio, cfg, signal }: AsrRequest): Promise<string> {
     const url = `${stripTrailingSlash(cfg.baseUrl)}/audio/transcriptions`;
     const formData = new FormData();
     formData.append('file', audio, 'audio.wav');
@@ -49,6 +49,7 @@ export class ZhipuProvider implements Provider {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
       body: formData,
+      signal,
     });
 
     if (!response.ok) {
@@ -58,7 +59,7 @@ export class ZhipuProvider implements Provider {
     return (result.text || '').trim();
   }
 
-  async translate({ text, systemInstruction, onChunk, cfg }: TranslateRequest): Promise<void> {
+  async translate({ text, systemInstruction, onChunk, cfg, history, signal }: TranslateRequest): Promise<void> {
     const url = `${stripTrailingSlash(cfg.baseUrl)}/chat/completions`;
     await streamChatCompletion({
       url,
@@ -67,6 +68,8 @@ export class ZhipuProvider implements Provider {
       systemInstruction,
       userText: text,
       onChunk,
+      history,
+      signal,
     });
   }
 }
