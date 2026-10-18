@@ -25,7 +25,8 @@ const CHUNK_SAMPLES: usize = 800; // 50ms @ 16k
 
 #[derive(Default)]
 pub struct SystemAudioState {
-    stop_tx: Mutex<Option<mpsc::Sender<()>>>,
+    /// [0] = 电脑声音，[1] = 麦克风（Linux 原生）；双向同传时两路同时在跑
+    stop_tx: Mutex<[Option<mpsc::Sender<()>>; 2]>,
 }
 
 #[derive(Serialize, Clone)]
@@ -326,7 +327,7 @@ pub fn start_system_audio(
     if !mic && !native_loopback_supported() {
         return Err("当前系统不支持原生录制电脑声音".into());
     }
-    stop_inner(&state);
+    stop_inner(&state, mic);
     let (stop_tx, stop_rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::channel();
     thread::Builder::new()
@@ -339,18 +340,18 @@ pub fn start_system_audio(
             mpsc::RecvTimeoutError::Timeout => "系统音频采集启动超时".to_string(),
             mpsc::RecvTimeoutError::Disconnected => "系统音频采集线程异常退出".to_string(),
         })??;
-    *state.stop_tx.lock().map_err(|e| e.to_string())? = Some(stop_tx);
+    state.stop_tx.lock().map_err(|e| e.to_string())?[mic as usize] = Some(stop_tx);
     Ok(info)
 }
 
 #[tauri::command]
-pub fn stop_system_audio(state: State<'_, SystemAudioState>) {
-    stop_inner(&state);
+pub fn stop_system_audio(state: State<'_, SystemAudioState>, microphone: Option<bool>) {
+    stop_inner(&state, microphone.unwrap_or(false));
 }
 
-fn stop_inner(state: &SystemAudioState) {
+fn stop_inner(state: &SystemAudioState, mic: bool) {
     if let Ok(mut guard) = state.stop_tx.lock() {
-        if let Some(tx) = guard.take() {
+        if let Some(tx) = guard[mic as usize].take() {
             let _ = tx.send(());
         }
     }

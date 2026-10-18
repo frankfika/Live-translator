@@ -32,6 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
+base64 = "0.22"
 
 # 系统音频回环采集：Windows (WASAPI loopback) / macOS 14.6+ (Core Audio process tap)
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]

@@ -4,6 +4,8 @@ export interface SubtitleMessage {
   translated: string; // From Output Transcription (Model Response)
   isFinal: boolean;
   timestamp: number;
+  /** in = 对方说的（翻译给我看）；out = 我说的（翻译成语音发出去） */
+  direction?: 'in' | 'out';
 }
 
 export type AudioSource = 'microphone' | 'system';

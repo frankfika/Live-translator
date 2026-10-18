@@ -1,9 +1,10 @@
-import { Provider, ProviderConfig, AsrRequest, TranslateRequest } from './types';
+import { Provider, ProviderConfig, AsrRequest, TranslateRequest, TtsRequest, TtsVoice } from './types';
 import {
   stripTrailingSlash,
   asHttpError,
   streamChatCompletion,
   apiKeyLooksValid,
+  openAiSpeech,
 } from './siliconflow';
 
 /**
@@ -28,6 +29,10 @@ export class CustomProvider implements Provider {
   readonly defaultAsrModel = '';
   readonly defaultLlmModel = 'gpt-4o-mini';
   readonly keyUrl = '';
+  readonly voices: TtsVoice[] = [
+    { id: 'alloy', label: 'alloy' }, { id: 'echo', label: 'echo' }, { id: 'fable', label: 'fable' },
+    { id: 'onyx', label: 'onyx' }, { id: 'nova', label: 'nova' }, { id: 'shimmer', label: 'shimmer' },
+  ];
   readonly customHint =
     'ASR 端点 (可选): POST {baseUrl}/audio/transcriptions (multipart) · LLM 端点: POST {baseUrl}/chat/completions (OpenAI 兼容流式)';
 
@@ -82,6 +87,16 @@ export class CustomProvider implements Provider {
       userText: text,
       onChunk,
       history,
+      signal,
+    });
+  }
+
+  /** OpenAI 兼容 TTS（tts-1）。私有部署可以在 baseUrl 后面接任何兼容服务 */
+  async synthesize({ text, voice, cfg, signal }: TtsRequest): Promise<ArrayBuffer> {
+    return openAiSpeech({
+      url: `${stripTrailingSlash(cfg.baseUrl)}/audio/speech`,
+      apiKey: cfg.apiKey,
+      body: { model: 'tts-1', input: text, voice: voice || 'alloy', response_format: 'wav' },
       signal,
     });
   }

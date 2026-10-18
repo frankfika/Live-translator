@@ -29,6 +29,19 @@ export interface AsrRequest {
   signal?: AbortSignal;
 }
 
+export interface TtsRequest {
+  text: string;
+  /** 音色 id（各家含义不同，见 Provider.voices） */
+  voice: string;
+  cfg: ProviderConfig;
+  signal?: AbortSignal;
+}
+
+export interface TtsVoice {
+  id: string;
+  label: string;
+}
+
 export interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
@@ -64,4 +77,9 @@ export interface Provider {
 
   /** 调 LLM 流式翻译；onChunk 多次回调，最后不保证 finish 信号（用 Promise resolve 表达） */
   translate(req: TranslateRequest): Promise<void>;
+
+  /** 可选：语音合成（双向同传把"我的话"说出去用）。返回 WAV 文件字节 */
+  synthesize?(req: TtsRequest): Promise<ArrayBuffer>;
+  /** 可选音色；第一项为默认 */
+  readonly voices?: TtsVoice[];
 }

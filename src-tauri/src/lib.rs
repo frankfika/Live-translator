@@ -1,4 +1,5 @@
 mod audio;
+mod speaker;
 mod commands;
 mod db;
 mod models;
@@ -61,6 +62,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .manage(database)
         .manage(audio::SystemAudioState::default())
+        .manage(speaker::SpeakerState::default())
         .manage(OverlayState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -210,6 +212,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             audio::system_audio_supported,
             audio::start_system_audio,
             audio::stop_system_audio,
+            speaker::list_output_devices,
+            speaker::setup_virtual_mic,
+            speaker::play_audio,
             open_panel,
             show_overlay,
             hide_overlay,

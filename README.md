@@ -31,6 +31,20 @@
 | Linux | 通过 PulseAudio / PipeWire 直接录默认扬声器（parec / pw-record） |
 | 浏览器版 | 共享会议标签页音频；字幕用画中画小窗悬浮在所有窗口之上 |
 
+**双向同传：你说的话也翻译成语音，说给会议对方听（v1.1 新增）**
+
+开启「设置 → 我的发言」后：对方的声音 → 字幕给你看；同时 你的声音 → 翻译 → 语音 → 虚拟麦克风 → 对方听到。
+
+| 平台 | 虚拟麦克风 | 会议软件里把「麦克风」选成 |
+|---|---|---|
+| Windows | 安装免费的 [VB-Cable](https://vb-audio.com/Cable/) | CABLE Output |
+| macOS | 安装免费的 [BlackHole](https://existential.audio/blackhole/) | BlackHole 2ch |
+| Linux | 应用自动创建，无需安装 | AI-Interpreter-Virtual-Mic |
+
+- 语音合成目前支持 SiliconFlow（CosyVoice2，8 种音色）和自定义 OpenAI 兼容服务（tts-1）
+- 建议戴耳机，避免麦克风收到对方的外放声音又被翻译一遍
+- 设置页可「试听」，确认声音送到了虚拟麦克风
+
 **噪音和准确度：**
 
 - 自适应 VAD：自动跟踪环境底噪，空调 / 键盘 / 咳嗽不再触发；保留 300ms 预录不丢首字；换气停顿不再把一句话切碎

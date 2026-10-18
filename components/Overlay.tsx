@@ -57,7 +57,7 @@ const Overlay: React.FC<OverlayProps> = ({
     return () => clearInterval(t);
   }, [running, hideAfter]);
 
-  const idle = running && hideAfter > 0 && !state.live && !state.error && !state.warning && now - state.lastActivity > hideAfter;
+  const idle = running && hideAfter > 0 && !state.live && !state.liveOut && !state.error && !state.warning && now - state.lastActivity > hideAfter;
   const faded = idle && !hover;
 
   // 窗口高度跟随内容
@@ -85,14 +85,13 @@ const Overlay: React.FC<OverlayProps> = ({
   const bg = `rgba(12, 14, 20, ${faded ? 0 : settings.overlayOpacity})`;
 
   // 要显示的行：正在翻译的一句 + 上一句（淡一点）
-  const blocks: { key: string; line: LiveLine | SubtitleMessage; current: boolean }[] = [];
-  if (state.live) {
-    const prev = messages[messages.length - 1];
-    if (prev) blocks.push({ key: prev.id, line: prev, current: false });
-    blocks.push({ key: state.live.id, line: state.live, current: true });
-  } else {
-    messages.slice(-2).forEach((m, i, arr) => blocks.push({ key: m.id, line: m, current: i === arr.length - 1 }));
-  }
+  // 要显示的行：最近的两条（进行中的优先），上一条淡一点。
+  // 双向模式下"我"说的那一路（out）也混在里面，用"我 →"标出来
+  type Block = { key: string; line: LiveLine | SubtitleMessage; current: boolean; out: boolean };
+  const recent: Omit<Block, 'current'>[] = messages.slice(-2).map((m) => ({ key: m.id, line: m, out: m.direction === 'out' }));
+  if (state.liveOut) recent.push({ key: state.liveOut.id, line: state.liveOut, out: true });
+  if (state.live) recent.push({ key: state.live.id, line: state.live, out: false });
+  const blocks: Block[] = recent.slice(-2).map((b, i, arr) => ({ ...b, current: i === arr.length - 1 }));
 
   const dot = (() => {
     if (state.status === ConnectionStatus.ERROR) return 'bg-red-500';
@@ -188,20 +187,22 @@ const Overlay: React.FC<OverlayProps> = ({
   } else {
     body = (
       <div ref={textRef} className="ov-scroll overflow-y-auto pr-1" style={{ maxHeight: fs * 1.45 * 4 + fs * 0.62 * 1.4 * 2 + 16 }}>
-        {blocks.map(({ key, line, current }) => {
+        {blocks.map(({ key, line, current, out }) => {
           const translated = line.translated;
           const original = line.original;
           return (
             <div key={key} className={`transition-opacity duration-300 ${current ? '' : 'opacity-45'} ${current ? '' : 'mb-1'}`}>
               {settings.overlayShowOriginal && original && (
                 <div className="text-white/55 leading-snug" style={{ fontSize: Math.round(fs * (current ? 0.64 : 0.58)) }}>
+                  {out && <span className="mr-1.5 rounded px-1 py-px text-[0.85em] font-semibold text-sky-300 bg-sky-400/15">我 →</span>}
                   {original}
                 </div>
               )}
               <div
-                className="font-semibold leading-snug text-white"
+                className={`font-semibold leading-snug ${out ? 'text-sky-200' : 'text-white'}`}
                 style={{ fontSize: current ? fs : Math.round(fs * 0.78), textShadow: '0 1px 2px rgba(0,0,0,0.6)' }}
               >
+                {out && !settings.overlayShowOriginal && <span className="mr-1.5 text-[0.6em] text-sky-300 align-middle">我 →</span>}
                 {translated || (current ? <span className="text-white/40 font-normal ov-dots">翻译中</span> : '')}
               </div>
             </div>

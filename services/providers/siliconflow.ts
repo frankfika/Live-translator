@@ -1,4 +1,4 @@
-import { Provider, ProviderConfig, AsrRequest, TranslateRequest, ChatTurn } from './types';
+import { Provider, ProviderConfig, AsrRequest, TranslateRequest, ChatTurn, TtsRequest, TtsVoice } from './types';
 
 const API_BASE = 'https://api.siliconflow.cn/v1';
 
@@ -35,6 +35,17 @@ export class SiliconFlowProvider implements Provider {
   readonly defaultAsrModel = 'FunAudioLLM/SenseVoiceSmall';
   readonly defaultLlmModel = 'Qwen/Qwen3-32B';
   readonly keyUrl = 'https://cloud.siliconflow.cn/account/ak';
+  /** CosyVoice2 预置音色（男：alex/benjamin/charles/david，女：anna/bella/claire/diana），中英日韩都能说 */
+  readonly voices: TtsVoice[] = [
+    { id: 'alex', label: '男声 · 沉稳（alex）' },
+    { id: 'benjamin', label: '男声 · 低沉（benjamin）' },
+    { id: 'charles', label: '男声 · 磁性（charles）' },
+    { id: 'david', label: '男声 · 欢快（david）' },
+    { id: 'anna', label: '女声 · 沉稳（anna）' },
+    { id: 'bella', label: '女声 · 激情（bella）' },
+    { id: 'claire', label: '女声 · 温柔（claire）' },
+    { id: 'diana', label: '女声 · 欢快（diana）' },
+  ];
 
   validateConfig(cfg: ProviderConfig): string | null {
     const keyErr = apiKeyLooksValid(cfg.apiKey);
@@ -78,6 +89,43 @@ export class SiliconFlowProvider implements Provider {
       extraBody: thinkingOffBody(cfg.llmModel),
     });
   }
+
+  async synthesize({ text, voice, cfg, signal }: TtsRequest): Promise<ArrayBuffer> {
+    const model = SILICONFLOW_TTS_MODEL;
+    return openAiSpeech({
+      url: `${stripTrailingSlash(cfg.baseUrl)}/audio/speech`,
+      apiKey: cfg.apiKey,
+      body: {
+        model,
+        input: text,
+        // 系统预置音色要带模型前缀
+        voice: voice.includes(':') ? voice : `${model}:${voice || 'alex'}`,
+        response_format: 'wav',
+        sample_rate: 24000,
+        stream: false,
+      },
+      signal,
+    });
+  }
+}
+
+export const SILICONFLOW_TTS_MODEL = 'FunAudioLLM/CosyVoice2-0.5B';
+
+/** OpenAI 兼容的 /audio/speech，返回音频字节 */
+export async function openAiSpeech(opts: {
+  url: string;
+  apiKey: string;
+  body: Record<string, unknown>;
+  signal?: AbortSignal;
+}): Promise<ArrayBuffer> {
+  const response = await fetch(opts.url, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${opts.apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts.body),
+    signal: opts.signal,
+  });
+  if (!response.ok) throw await asHttpError(response, '语音合成');
+  return response.arrayBuffer();
 }
 
 // ── 共享工具 ─────────────────────────────────────────────────────────

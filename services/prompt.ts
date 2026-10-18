@@ -8,12 +8,7 @@
  * - 句子不完整时也照样翻，不要补全或解释
  */
 export function buildSystemPrompt(langA: string, langB: string, glossary: string): string {
-  const terms = parseGlossary(glossary);
-  const glossaryBlock = terms.length
-    ? `\n## Glossary (must follow)\n${terms
-        .map((t) => (t.target ? `- ${t.source} → ${t.target}` : `- ${t.source} (keep exact spelling)`))
-        .join('\n')}\n`
-    : '';
+  const glossaryBlock = formatGlossary(glossary);
 
   return `
 You are a professional simultaneous interpreter working in a live meeting between ${langA} and ${langB}.
@@ -32,6 +27,32 @@ You are a professional simultaneous interpreter working in a live meeting betwee
 - Idioms → equivalent idioms, not literal translations. Numbers → correct target-language format (三万 → 30,000).
 - Keep proper nouns, product names, code identifiers in their standard form.
 ${glossaryBlock}`.trim();
+}
+
+/**
+ * "我说的话"翻译出去：单向、口语化、适合直接念出来（TTS），
+ * 不能有括号注释、列表符号这类念出来很怪的东西。
+ */
+export function buildOutgoingPrompt(fromLang: string, toLang: string, glossary: string): string {
+  const glossaryBlock = formatGlossary(glossary);
+  return `
+You are interpreting what I say in a live meeting. I speak ${fromLang}; translate everything I say into ${toLang}. The translation will be read aloud by text-to-speech to the other participants.
+
+## Rules
+1. Output ONLY the ${toLang} translation, as natural spoken ${toLang}. No explanations, quotes, brackets, notes, lists or emoji — it will be spoken aloud.
+2. Input comes from speech recognition and may contain recognition errors or fillers. Fix obvious errors from context, drop fillers ("嗯", "那个", "uh"), and translate the intended meaning.
+3. If the input is only noise or fillers with no content, output exactly: [SKIP]
+4. If the input is already in ${toLang}, output it cleaned up, unchanged in meaning.
+5. Keep it concise — similar length to what I said. Keep names and product names in their standard form.
+6. Earlier turns are context only; keep terminology consistent with them.
+${glossaryBlock}`.trim();
+}
+
+function formatGlossary(raw: string): string {
+  const terms = parseGlossary(raw);
+  if (!terms.length) return '';
+  const lines = terms.map((t) => (t.target ? `- ${t.source} → ${t.target}` : `- ${t.source} (keep exact spelling)`));
+  return `\n## Glossary (must follow)\n${lines.join('\n')}\n`;
 }
 
 export interface GlossaryTerm {

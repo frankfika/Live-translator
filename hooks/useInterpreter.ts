@@ -3,7 +3,8 @@ import { ConnectionStatus, SubtitleMessage } from '../types';
 import { LiveSession, LiveCallbacks } from '../services/liveSession';
 import { acquireAudio, CaptureError, CaptureResult } from '../services/audioCapture';
 import { findProvider, buildProviderConfig } from '../services/providers';
-import { buildSystemPrompt } from '../services/prompt';
+import { buildSystemPrompt, buildOutgoingPrompt } from '../services/prompt';
+import { Speaker, resolveOutputDevice } from '../services/speaker';
 import { AppSettings, DEFAULT_SETTINGS, loadSettings, saveSettings, needsSessionRestart, normalizeSettings } from '../services/settings';
 import { isTauriApp, saveTranscript } from '../services/tauri';
 import * as bridge from '../services/bridge';
@@ -23,14 +24,20 @@ export interface LiveLine {
   translated: string;
 }
 
+export type SettingsTabId = 'audio' | 'connection' | 'speak';
+
 export interface InterpreterState {
   status: ConnectionStatus;
   phase: Phase;
   error: string | null;
   /** 错误建议跳到哪个设置 tab */
-  errorTab: 'audio' | 'connection' | null;
+  errorTab: SettingsTabId | null;
   warning: string | null;
   live: LiveLine | null;
+  /** 双向模式："我"正在说的这句（翻译成语音发出去） */
+  liveOut: LiveLine | null;
+  /** 双向模式：译文语音送到了哪个设备 */
+  voiceOutLabel: string;
   level: number;
   sourceLabel: string;
   /** 最后一次有字幕更新的时间，用于悬浮窗自动淡出 */
@@ -61,6 +68,8 @@ export const INITIAL_STATE: InterpreterState = {
   errorTab: null,
   warning: null,
   live: null,
+  liveOut: null,
+  voiceOutLabel: '',
   level: 0,
   sourceLabel: '',
   lastActivity: 0,
@@ -85,6 +94,10 @@ export function useInterpreter(): InterpreterApi {
   const stateRef = useRef(state);
   const sessionRef = useRef<LiveSession | null>(null);
   const captureRef = useRef<CaptureResult | null>(null);
+  // 双向模式的第二路："我"的麦克风 → 翻译 → 语音
+  const outSessionRef = useRef<LiveSession | null>(null);
+  const outCaptureRef = useRef<CaptureResult | null>(null);
+  const speakerRef = useRef<Speaker | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const startingRef = useRef(false);
   const warnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -110,22 +123,27 @@ export function useInterpreter(): InterpreterApi {
 
   const teardown = useCallback(async () => {
     const session = sessionRef.current;
+    const outSession = outSessionRef.current;
     sessionRef.current = null;
-    const cap = captureRef.current;
+    outSessionRef.current = null;
+    captureRef.current?.stop();
+    outCaptureRef.current?.stop();
     captureRef.current = null;
-    cap?.stop();
-    if (session) await session.disconnect();
+    outCaptureRef.current = null;
+    speakerRef.current?.stop();
+    speakerRef.current = null;
+    await Promise.all([session?.disconnect(), outSession?.disconnect()]);
   }, []);
 
   const stop = useCallback(async () => {
     await teardown();
     sessionIdRef.current = null;
-    patch({ status: ConnectionStatus.DISCONNECTED, phase: 'idle', live: null, level: 0, sourceLabel: '', warning: null });
+    patch({ status: ConnectionStatus.DISCONNECTED, phase: 'idle', live: null, liveOut: null, voiceOutLabel: '', level: 0, sourceLabel: '', warning: null });
   }, [teardown, patch]);
 
-  const fail = useCallback((message: string, tab: 'audio' | 'connection' | null = null) => {
+  const fail = useCallback((message: string, tab: SettingsTabId | null = null) => {
     void teardown();
-    patch({ status: ConnectionStatus.ERROR, phase: 'idle', error: message, errorTab: tab, live: null, level: 0, lastActivity: Date.now() });
+    patch({ status: ConnectionStatus.ERROR, phase: 'idle', error: message, errorTab: tab, live: null, liveOut: null, level: 0, lastActivity: Date.now() });
   }, [teardown, patch]);
 
   const start = useCallback(async () => {
@@ -235,8 +253,9 @@ export function useInterpreter(): InterpreterApi {
       let capture: CaptureResult;
       try {
         capture = await acquireAudio({
-          source: s.audioSource,
-          deviceId: s.audioInputDeviceId,
+          // 双向模式：对方的声音一定来自电脑声音，麦克风留给"我"那一路
+          source: s.speakOut ? 'system' : s.audioSource,
+          deviceId: s.speakOut ? '' : s.audioInputDeviceId,
           echoCancellation: s.echoCancellation,
           onPcm: (pcm) => session.feed(pcm),
           onEnded: (reason) => {
@@ -262,10 +281,102 @@ export function useInterpreter(): InterpreterApi {
       } else {
         session.attachPcm(callbacks, capture.sampleRate);
       }
+
+      if (s.speakOut && isCurrent()) await startOutgoing(s, provider, providerConfig, isCurrent);
     } finally {
       startingRef.current = false;
     }
-  }, [fail, patch]);
+  }, [fail, patch]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * 双向模式的第二路：我的麦克风 → 识别 → 翻译成对方语言 → 合成语音 → 虚拟麦克风 → 会议对方听到。
+   * 和对方那一路互不影响：这一路出错只提示，不停掉字幕。
+   */
+  const startOutgoing = async (
+    s: AppSettings,
+    provider: ReturnType<typeof findProvider>,
+    providerConfig: ReturnType<typeof buildProviderConfig>,
+    isCurrent: () => boolean,
+  ) => {
+    const warn = (msg: string) => {
+      patch({ warning: msg });
+      if (warnTimerRef.current) clearTimeout(warnTimerRef.current);
+      warnTimerRef.current = setTimeout(() => patch({ warning: null }), 6000);
+    };
+    if (!provider.synthesize) {
+      fail(`${provider.displayName} 不支持语音合成，无法把你的话说出去。\n请在「我的发言」里关闭，或换用 SiliconFlow / 自定义（OpenAI 兼容）服务。`, 'speak');
+      return;
+    }
+    let device: { id: string; label: string };
+    try {
+      device = await resolveOutputDevice(s.voiceOutputDevice);
+    } catch (err) {
+      fail((err as Error).message, 'speak');
+      return;
+    }
+    if (!isCurrent()) return;
+    const myLang = s.myLanguage === s.langB ? s.langB : s.langA;
+    const otherLang = myLang === s.langA ? s.langB : s.langA;
+    const speaker = new Speaker(provider, providerConfig, s.voice || provider.voices?.[0]?.id || '', device.id, warn);
+    speakerRef.current = speaker;
+
+    const out = new LiveSession({
+      provider,
+      providerConfig,
+      systemInstruction: buildOutgoingPrompt(myLang, otherLang, s.glossary),
+      vadSensitivity: s.vadSensitivity,
+    });
+    outSessionRef.current = out;
+    const mine = () => outSessionRef.current === out && isCurrent();
+
+    let cap: CaptureResult;
+    try {
+      cap = await acquireAudio({
+        source: 'microphone',
+        deviceId: s.myMicDeviceId,
+        // 我这一路是麦克风：保持回声消除，减少把会议外放的声音当成我在说话
+        echoCancellation: true,
+        onPcm: (pcm) => out.feed(pcm),
+        onEnded: (reason) => { if (mine()) warn(`${reason}，你的发言已停止翻译。`); },
+      });
+    } catch (err) {
+      if (isCurrent()) fail(`无法打开你的麦克风：${(err as Error).message}`, 'speak');
+      return;
+    }
+    if (!mine()) { cap.stop(); return; }
+    outCaptureRef.current = cap;
+    patch({ voiceOutLabel: device.label });
+
+    const outCallbacks: LiveCallbacks = {
+      onOpen: () => {},
+      onClose: () => {},
+      onError: (err) => { if (mine()) fail(`你的发言翻译出错：${err.message}`, /Key|401|403|404|余额/.test(err.message) ? 'connection' : 'speak'); },
+      onWarning: (msg) => { if (mine()) warn(msg); },
+      onSegmentStart: (id) => { if (mine()) patch({ liveOut: { id, original: '', translated: '' } }); },
+      onTranscript: (id, text) => { if (mine()) patch({ liveOut: { id, original: text, translated: '' }, lastActivity: Date.now() }); },
+      onTranslation: (id, text) => {
+        if (!mine()) return;
+        setState((st) => ({ ...st, liveOut: { id, original: st.liveOut?.id === id ? st.liveOut.original : '', translated: text }, lastActivity: Date.now() }));
+      },
+      onTurnComplete: (id, original, translated) => {
+        if (!mine()) return;
+        speaker.say(translated);
+        const msg: SubtitleMessage = { id, original, translated, isFinal: true, timestamp: Date.now(), direction: 'out' };
+        setMessages((prev) => {
+          const next = [...prev, msg];
+          return next.length > MAX_MESSAGES ? next.slice(-MAX_MESSAGES) : next;
+        });
+        setState((st) => ({ ...st, liveOut: st.liveOut?.id === id ? null : st.liveOut, lastActivity: Date.now() }));
+        const sid = sessionIdRef.current;
+        if (isTauriApp() && sid) saveTranscript(sid, original, translated, myLang, otherLang).catch(() => {});
+      },
+      onDiscard: (id) => {
+        if (mine()) setState((st) => ({ ...st, liveOut: id && st.liveOut?.id === id ? null : st.liveOut }));
+      },
+    };
+    if (cap.kind === 'stream') await out.attachStream(outCallbacks, cap.stream);
+    else out.attachPcm(outCallbacks, cap.sampleRate);
+  };
 
   const toggle = useCallback(() => {
     const st = stateRef.current.status;

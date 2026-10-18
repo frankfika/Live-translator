@@ -23,6 +23,18 @@ export interface AppSettings {
   /** VAD 灵敏度：low 只收清晰人声（嘈杂环境），high 连小声也收 */
   vadSensitivity: 'low' | 'medium' | 'high';
 
+  // ── 双向同传：把我说的话翻译成语音，送进会议 ──
+  /** 开启后：电脑声音 → 字幕给我看；同时 麦克风（我）→ 翻译 → 语音 → 虚拟麦克风 → 对方听到 */
+  speakOut: boolean;
+  /** 我说的语言；译文为 langA / langB 中的另一种 */
+  myLanguage: string;
+  /** 我的麦克风（双向模式下"我"这一路的输入设备，空 = 系统默认） */
+  myMicDeviceId: string;
+  /** 译文语音播放到的输出设备（空 = 自动选虚拟声卡） */
+  voiceOutputDevice: string;
+  /** 音色 */
+  voice: string;
+
   // ── 悬浮字幕外观 ──
   overlayFontSize: number;
   overlayOpacity: number;
@@ -47,6 +59,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   llmModel: '',
   glossary: '',
   vadSensitivity: 'medium',
+  speakOut: false,
+  myLanguage: 'Chinese',
+  myMicDeviceId: '',
+  voiceOutputDevice: '',
+  voice: '',
   overlayFontSize: 22,
   overlayOpacity: 0.78,
   overlayShowOriginal: true,
@@ -118,6 +135,7 @@ export async function saveSettings(next: AppSettings, prev?: AppSettings): Promi
 export const SESSION_KEYS: (keyof AppSettings)[] = [
   'langA', 'langB', 'audioSource', 'audioInputDeviceId', 'echoCancellation',
   'providerId', 'apiKey', 'baseUrl', 'asrModel', 'llmModel', 'glossary', 'vadSensitivity',
+  'speakOut', 'myLanguage', 'myMicDeviceId', 'voiceOutputDevice', 'voice',
 ];
 
 export function needsSessionRestart(a: AppSettings, b: AppSettings): boolean {

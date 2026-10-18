@@ -47,7 +47,7 @@ function fallbackCopy(text: string) {
 }
 
 function exportTranscript(messages: SubtitleMessage[], langA: string, langB: string) {
-  const lines = messages.map((m) => `[${fmtTime(m.timestamp)}]\n${m.original}\n${m.translated}`);
+  const lines = messages.map((m) => `[${fmtTime(m.timestamp)}]${m.direction === 'out' ? ' 我' : ''}\n${m.original}\n${m.translated}`);
   const content = `AI 同声传译记录（${langA} ⇄ ${langB}）\n${new Date().toLocaleString()}\n${'='.repeat(40)}\n\n${lines.join('\n\n')}\n`;
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -58,12 +58,14 @@ function exportTranscript(messages: SubtitleMessage[], langA: string, langB: str
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-const MessageRow: React.FC<{ m: { original: string; translated: string; timestamp?: number }; live?: boolean }> = React.memo(({ m, live }) => {
+const MessageRow: React.FC<{ m: { original: string; translated: string; timestamp?: number; direction?: 'in' | 'out' }; live?: boolean }> = React.memo(({ m, live }) => {
+  const out = m.direction === 'out';
   const [copied, setCopied] = useState(false);
   return (
     <div className={`group relative rounded-xl px-4 py-3 ${live ? 'bg-sky-500/5 ring-1 ring-sky-500/20' : 'hover:bg-white/[0.03]'}`}>
       <div className="flex items-center gap-2 text-[11px] text-gray-600 mb-1">
         <span className="font-mono tabular-nums">{m.timestamp ? fmtTime(m.timestamp) : '实时'}</span>
+        {out && <span className="rounded px-1.5 py-px bg-sky-500/15 text-sky-300 font-semibold">我 · 已说给对方</span>}
         {!live && (
           <button
             className="ml-auto opacity-0 group-hover:opacity-100 focus:opacity-100 flex items-center gap-1 text-gray-500 hover:text-gray-200 transition-opacity"
@@ -74,7 +76,7 @@ const MessageRow: React.FC<{ m: { original: string; translated: string; timestam
         )}
       </div>
       {m.original && <p className="text-sm text-gray-400 leading-relaxed">{m.original}</p>}
-      <p className="text-base text-gray-50 leading-relaxed font-medium mt-0.5">
+      <p className={`text-base leading-relaxed font-medium mt-0.5 ${out ? 'text-sky-100' : 'text-gray-50'}`}>
         {m.translated || (live ? <span className="text-gray-500 font-normal">翻译中…</span> : '')}
       </p>
     </div>
@@ -130,8 +132,9 @@ const Panel: React.FC<Props> = ({ api, onShowOverlay, overlayLabel = '悬浮字�
           <div className="min-w-0">
             <p className="text-sm font-semibold">AI 同声传译 <span className="ml-1 text-xs font-normal text-gray-500">{statusText}</span></p>
             <p className="text-xs text-gray-500 truncate">
-              {langLabel(settings.langA)} ⇄ {langLabel(settings.langB)} · {settings.audioSource === 'system' ? '电脑声音' : '麦克风'}
-              {state.sourceLabel && running ? `（${state.sourceLabel}）` : ''} · {provider.displayName}
+              {langLabel(settings.langA)} ⇄ {langLabel(settings.langB)} · {settings.speakOut || settings.audioSource === 'system' ? '电脑声音' : '麦克风'}
+              {state.sourceLabel && running ? `（${state.sourceLabel}）` : ''}
+              {settings.speakOut ? ` · 双向：我的话 → ${state.voiceOutLabel || '虚拟麦克风'}` : ''} · {provider.displayName}
             </p>
           </div>
         </div>
@@ -188,6 +191,7 @@ const Panel: React.FC<Props> = ({ api, onShowOverlay, overlayLabel = '悬浮字�
             ) : (
               <div className="max-w-3xl mx-auto space-y-1">
                 {messages.map((m) => <MessageRow key={m.id} m={m} />)}
+                {state.liveOut && <MessageRow m={{ ...state.liveOut, direction: 'out' }} live />}
                 {state.live && <MessageRow m={state.live} live />}
               </div>
             )}

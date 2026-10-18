@@ -12,8 +12,10 @@ import { isTauriApp } from '../services/tauri';
 import { humanizeError } from '../services/liveSession';
 import { acquireAudio } from '../services/audioCapture';
 import { calculateRMS } from '../services/audioUtils';
+import { listOutputDevices, resolveOutputDevice, playSamples, OutputDeviceInfo, VIRTUAL_MIC_HELP } from '../services/speaker';
+import { decodeWav } from '../services/wav';
 
-export type SettingsTab = 'connection' | 'audio' | 'language' | 'display';
+export type SettingsTab = 'connection' | 'audio' | 'speak' | 'language' | 'display';
 
 interface Props {
   settings: AppSettings;
@@ -39,6 +41,7 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'connection', label: '模型服务' },
   { id: 'audio', label: '声音来源' },
   { id: 'language', label: '语言与术语' },
+  { id: 'speak', label: '我的发言' },
   { id: 'display', label: '字幕外观' },
 ];
 
@@ -80,6 +83,8 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [level, setLevel] = useState(0);
+  const [outputs, setOutputs] = useState<OutputDeviceInfo[]>([]);
+  const [voiceTest, setVoiceTest] = useState<{ state: 'idle' | 'running' | 'ok' | 'fail'; msg?: string }>({ state: 'idle' });
   const [apiTest, setApiTest] = useState<{ state: 'idle' | 'running' | 'ok' | 'fail'; msg?: string }>({ state: 'idle' });
 
   const previewRef = useRef<{ stop: () => void } | null>(null);
@@ -88,6 +93,9 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
   const editedRef = useRef(false);
 
   useEffect(() => { if (initialTab) setTab(initialTab); }, [initialTab]);
+  useEffect(() => {
+    if (isOpen && tab === 'speak') void listOutputDevices().then(setOutputs);
+  }, [isOpen, tab]);
   useEffect(() => {
     if (!editedRef.current || !isOpen) {
       editedRef.current = false;
@@ -335,6 +343,11 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
 
   const audioTab = (
     <div className="space-y-5">
+      {draft.speakOut && (
+        <p className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
+          已开启双向同传（见「我的发言」）：字幕固定翻译电脑声音（会议对方），你的麦克风用于把你的话翻译出去。
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3">
         {([
           ['system', '电脑声音', '会议对方 / 视频 / 网页'],
@@ -465,6 +478,127 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
     </div>
   );
 
+
+  const otherLang = draft.myLanguage === draft.langA ? draft.langB : draft.langA;
+  const langLabelOf = (id: string) => LANGUAGES.find((l) => l.id === id)?.label ?? id;
+  const voices = provider.voices ?? [];
+  const isLinuxDesktop = isTauriApp() && /Linux/i.test(navigator.platform || navigator.userAgent);
+
+  const runVoiceTest = async () => {
+    if (!provider.synthesize) { setVoiceTest({ state: 'fail', msg: `${provider.displayName} 不支持语音合成` }); return; }
+    if (cfgError) { setVoiceTest({ state: 'fail', msg: cfgError }); return; }
+    setVoiceTest({ state: 'running' });
+    try {
+      const dev = await resolveOutputDevice(draft.voiceOutputDevice);
+      const sample: Record<string, string> = {
+        English: 'Hello everyone, this is a test of my interpreter voice.',
+        Chinese: '大家好，这是同声传译语音的测试。',
+        Japanese: 'こんにちは、通訳音声のテストです。',
+        Korean: '안녕하세요, 통역 음성 테스트입니다.',
+      };
+      const wav = await provider.synthesize({
+        text: sample[otherLang] ?? sample.English,
+        voice: draft.voice || voices[0]?.id || '',
+        cfg: providerCfg,
+      });
+      const { samples, sampleRate } = decodeWav(wav);
+      await playSamples(samples, sampleRate, dev.id);
+      setVoiceTest({ state: 'ok', msg: `已播放到「${dev.label}」` });
+      void listOutputDevices().then(setOutputs);
+    } catch (err) {
+      setVoiceTest({ state: 'fail', msg: humanizeError(err instanceof Error ? err.message : String(err)) });
+    }
+  };
+
+  const speakTab = (
+    <div className="space-y-5">
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 px-4">
+        <Row
+          title="把我说的话翻译成语音，说给会议对方听"
+          desc="开启后是双向同传：对方的声音 → 字幕给你看；你的声音 → 翻译 → 语音发到会议里。"
+        >
+          <Toggle checked={draft.speakOut} onChange={(v) => set('speakOut', v)} />
+        </Row>
+      </div>
+
+      {!provider.synthesize && (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          当前服务商 {provider.displayName} 不支持语音合成。请在「模型服务」里换成 SiliconFlow 或自定义（OpenAI 兼容）。
+        </p>
+      )}
+
+      <div className={`space-y-5 ${draft.speakOut ? '' : 'opacity-50 pointer-events-none'}`}>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="my-lang" className={labelCls}>我说的语言</label>
+            <select id="my-lang" value={draft.myLanguage === draft.langB ? draft.langB : draft.langA} onChange={(e) => set('myLanguage', e.target.value)} className={inputCls}>
+              <option value={draft.langA}>{langLabelOf(draft.langA)}</option>
+              <option value={draft.langB}>{langLabelOf(draft.langB)}</option>
+            </select>
+          </div>
+          <div>
+            <p className={labelCls}>对方听到的语言</p>
+            <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2.5 text-sm text-gray-300">{langLabelOf(otherLang)}</div>
+          </div>
+        </div>
+
+        <div>
+          <label htmlFor="my-mic" className={labelCls}>我的麦克风</label>
+          <select id="my-mic" value={draft.myMicDeviceId} onChange={(e) => set('myMicDeviceId', e.target.value)} className={inputCls}>
+            <option value="">跟随系统默认</option>
+            {inputs.filter((d) => d.deviceId !== 'default' && !d.isVirtual && !isLoopbackInputDevice(d.label)).map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-[11px] text-gray-500">建议戴耳机：外放时麦克风会收到对方的声音，又被翻译一遍。</p>
+        </div>
+
+        <div>
+          <label htmlFor="voice-out" className={labelCls}>译文语音送到（虚拟麦克风）</label>
+          <select id="voice-out" value={draft.voiceOutputDevice} onChange={(e) => set('voiceOutputDevice', e.target.value)} className={inputCls}>
+            <option value="">{isLinuxDesktop ? '自动（创建虚拟麦克风 AI-Interpreter-Virtual-Mic）' : '自动（选择检测到的虚拟声卡）'}</option>
+            {outputs.map((d) => (
+              <option key={d.id} value={d.id}>{d.label}{d.isVirtual ? '（虚拟）' : ''}</option>
+            ))}
+          </select>
+          <div className="mt-2 rounded-lg border border-gray-800 bg-gray-900/50 p-3 text-xs text-gray-400 leading-relaxed space-y-1">
+            {isLinuxDesktop ? (
+              <p>开始翻译时会自动创建虚拟麦克风。在会议软件的音频设置里，把<b className="text-gray-200">麦克风</b>选成 <b className="text-gray-200">AI-Interpreter-Virtual-Mic</b>。</p>
+            ) : outputs.some((d) => d.isVirtual) ? (
+              <p>已检测到虚拟声卡。在会议软件的音频设置里，把<b className="text-gray-200">麦克风</b>选成对应的输入端：VB-Cable 选 <b className="text-gray-200">CABLE Output</b>，BlackHole 选 <b className="text-gray-200">BlackHole 2ch</b>。</p>
+            ) : (
+              <p className="text-amber-200/90 whitespace-pre-line">{VIRTUAL_MIC_HELP}</p>
+            )}
+            <p className="text-gray-500">对方听到的是译文语音，不会听到你的原声。</p>
+          </div>
+        </div>
+
+        {voices.length > 0 && (
+          <div>
+            <label htmlFor="voice" className={labelCls}>音色</label>
+            <select id="voice" value={draft.voice || voices[0].id} onChange={(e) => set('voice', e.target.value)} className={inputCls}>
+              {voices.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+            </select>
+          </div>
+        )}
+
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void runVoiceTest()}
+            disabled={voiceTest.state === 'running'}
+            className="rounded-lg border border-gray-700 px-3 py-2 text-xs font-medium text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+          >
+            {voiceTest.state === 'running' ? '合成中…' : '试听'}
+          </button>
+          <span className={`text-xs ${voiceTest.state === 'ok' ? 'text-emerald-400' : voiceTest.state === 'fail' ? 'text-red-400 whitespace-pre-line' : 'text-gray-500'}`}>
+            {voiceTest.state === 'idle' ? '用当前音色念一句，送到上面选的设备' : voiceTest.msg}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+
   const displayTab = (
     <div className="rounded-xl border border-gray-800 bg-gray-900/50 px-4 divide-y divide-gray-800">
       <Row title="字号" desc={`${draft.overlayFontSize}px`}>
@@ -513,6 +647,7 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
         {tab === 'connection' && connectionTab}
         {tab === 'audio' && audioTab}
         {tab === 'language' && languageTab}
+        {tab === 'speak' && speakTab}
         {tab === 'display' && displayTab}
       </div>
       <footer className="flex-none flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-800">

@@ -36,7 +36,7 @@ export async function startNativeSystemAudio(onPcm: (samples: Float32Array) => v
     device: info.device,
     stop: () => {
       active = false;
-      void invoke('stop_system_audio').catch(() => {});
+      void invoke('stop_system_audio', { microphone }).catch(() => {});
     },
   };
 }
