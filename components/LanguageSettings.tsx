@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { AudioInputDevice } from '../types';
 import {
-  buildMicrophoneConstraints,
   formatMediaError,
   normalizeAudioInputDevices,
   isVirtualAudioDevice,
@@ -11,6 +10,8 @@ import { PROVIDERS, findProvider, buildProviderConfig } from '../services/provid
 import { AppSettings } from '../services/settings';
 import { isTauriApp } from '../services/tauri';
 import { humanizeError } from '../services/liveSession';
+import { acquireAudio } from '../services/audioCapture';
+import { calculateRMS } from '../services/audioUtils';
 
 export type SettingsTab = 'connection' | 'audio' | 'language' | 'display';
 
@@ -22,6 +23,8 @@ interface Props {
   isOpen?: boolean;
   onClose?: () => void;
   initialTab?: SettingsTab;
+  /** 翻译进行中：输入测试会和正在跑的采集抢设备，禁用 */
+  busy?: boolean;
 }
 
 export const LANGUAGES: { id: string; label: string }[] = [
@@ -69,7 +72,7 @@ const Row: React.FC<{ title: string; desc?: React.ReactNode; children: React.Rea
   </div>
 );
 
-const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen = true, onClose, initialTab }) => {
+const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen = true, onClose, initialTab, busy }) => {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? 'connection');
   const [draft, setDraft] = useState<AppSettings>(settings);
   const [showKey, setShowKey] = useState(false);
@@ -79,7 +82,7 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
   const [level, setLevel] = useState(0);
   const [apiTest, setApiTest] = useState<{ state: 'idle' | 'running' | 'ok' | 'fail'; msg?: string }>({ state: 'idle' });
 
-  const previewRef = useRef<{ stream: MediaStream; ctx: AudioContext; raf: number } | null>(null);
+  const previewRef = useRef<{ stop: () => void } | null>(null);
   const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
   // 用户是否动过表单：没动过就始终跟随外部设置（异步加载完成、悬浮窗里切了音源等）
   const editedRef = useRef(false);
@@ -98,13 +101,8 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
   };
 
   const stopPreview = useCallback(() => {
-    const p = previewRef.current;
-    if (p) {
-      cancelAnimationFrame(p.raf);
-      p.stream.getTracks().forEach((t) => t.stop());
-      void p.ctx.close().catch(() => {});
-      previewRef.current = null;
-    }
+    previewRef.current?.stop();
+    previewRef.current = null;
     setTesting(false);
     setLevel(0);
   }, []);
@@ -129,32 +127,49 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
   }, [isOpen, refreshInputs, stopPreview]);
 
   useEffect(() => () => stopPreview(), [stopPreview]);
+  // 换了声音来源 / 开始翻译时停掉测试
+  useEffect(() => { stopPreview(); }, [draft.audioSource, busy, stopPreview]);
 
+  // 输入测试走和正式翻译完全相同的采集路径（含 Linux 原生录音、电脑声音），测到的就是实际会用的
   const startPreview = async () => {
     stopPreview();
     setDeviceError(null);
+    const toLevel = (rms: number) => {
+      const db = 20 * Math.log10(Math.max(rms, 1e-6));
+      setLevel((p) => p * 0.6 + Math.min(1, Math.max(0, (db + 60) / 60)) * 0.4);
+    };
     try {
-      const dev = inputs.find((d) => d.deviceId === draft.audioInputDeviceId);
-      const raw = dev && (dev.isVirtual || isLoopbackInputDevice(dev.label));
-      const on = draft.echoCancellation && !raw;
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: buildMicrophoneConstraints(draft.audioInputDeviceId || undefined, { echoCancellation: on, noiseSuppression: on, autoGainControl: on }),
+      const cap = await acquireAudio({
+        source: draft.audioSource,
+        deviceId: draft.audioInputDeviceId,
+        echoCancellation: draft.echoCancellation,
+        onPcm: (pcm) => toLevel(calculateRMS(pcm)),
+        onEnded: () => stopPreview(),
       });
-      const ctx = new AudioContext();
-      await ctx.resume().catch(() => {});
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 1024;
-      ctx.createMediaStreamSource(stream).connect(analyser);
-      const data = new Float32Array(analyser.fftSize);
-      const tick = () => {
-        analyser.getFloatTimeDomainData(data);
-        let sum = 0;
-        for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
-        const db = 20 * Math.log10(Math.max(Math.sqrt(sum / data.length), 1e-6));
-        setLevel((p) => p * 0.6 + Math.min(1, Math.max(0, (db + 60) / 60)) * 0.4);
-        if (previewRef.current) previewRef.current.raf = requestAnimationFrame(tick);
-      };
-      previewRef.current = { stream, ctx, raf: requestAnimationFrame(tick) };
+      if (cap.kind === 'pcm') {
+        previewRef.current = { stop: cap.stop };
+      } else {
+        const ctx = new AudioContext();
+        await ctx.resume().catch(() => {});
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 1024;
+        ctx.createMediaStreamSource(cap.stream).connect(analyser);
+        const data = new Float32Array(analyser.fftSize);
+        let raf = 0;
+        const tick = () => {
+          analyser.getFloatTimeDomainData(data);
+          toLevel(calculateRMS(data));
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+        previewRef.current = {
+          stop: () => {
+            cancelAnimationFrame(raf);
+            cap.stop();
+            void ctx.close().catch(() => {});
+          },
+        };
+      }
       setTesting(true);
       void refreshInputs();
     } catch (err) {
@@ -363,25 +378,34 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
             >
               <Toggle checked={draft.echoCancellation && !selectedIsRaw} onChange={(v) => set('echoCancellation', v)} />
             </Row>
-            <div className="py-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-gray-100">输入测试</p>
-                <button
-                  type="button"
-                  onClick={() => (testing ? stopPreview() : void startPreview())}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${testing ? 'bg-red-600 hover:bg-red-500' : 'bg-gray-700 hover:bg-gray-600'} text-white`}
-                >
-                  {testing ? '停止' : '测试'}
-                </button>
-              </div>
-              <div className="mt-2 h-1.5 rounded-full bg-gray-800 overflow-hidden">
-                <div className="h-full rounded-full bg-emerald-400 transition-[width] duration-75" style={{ width: `${Math.round(level * 100)}%` }} />
-              </div>
-              {deviceError && <p className="mt-2 text-xs text-red-400 whitespace-pre-line">{deviceError}</p>}
-            </div>
           </div>
         </div>
       )}
+
+      <div className="rounded-xl border border-gray-800 bg-gray-900/50 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm text-gray-100">{draft.audioSource === 'system' ? '测试电脑声音' : '测试麦克风'}</p>
+            <p className="mt-0.5 text-xs text-gray-500">
+              {busy
+                ? '翻译进行中，看字幕条左侧的圆点跳动即可判断有没有收到声音'
+                : draft.audioSource === 'system' ? '播放一段视频或会议声音，下面的条应该跟着动' : '说几句话，下面的条应该跟着动'}
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={busy && !testing}
+            onClick={() => (testing ? stopPreview() : void startPreview())}
+            className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${testing ? 'bg-red-600 hover:bg-red-500' : 'bg-gray-700 hover:bg-gray-600'} text-white disabled:opacity-40`}
+          >
+            {testing ? '停止' : '测试'}
+          </button>
+        </div>
+        <div className="mt-2 h-1.5 rounded-full bg-gray-800 overflow-hidden">
+          <div className="h-full rounded-full bg-emerald-400 transition-[width] duration-75" style={{ width: `${Math.round(level * 100)}%` }} />
+        </div>
+        {deviceError && <p className="mt-2 text-xs text-red-400 whitespace-pre-line">{deviceError}</p>}
+      </div>
 
       <div>
         <p className={labelCls}>环境噪音</p>

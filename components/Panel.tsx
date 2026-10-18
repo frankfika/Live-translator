@@ -211,6 +211,7 @@ const Panel: React.FC<Props> = ({ api, onShowOverlay, overlayLabel = '悬浮字�
             embedded
             settings={settings}
             initialTab={settingsTab}
+            busy={running}
             onSave={(next) => { api.updateSettings(next); }}
           />
         </div>
