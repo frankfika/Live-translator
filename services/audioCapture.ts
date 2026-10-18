@@ -136,9 +136,12 @@ async function acquireSystem(opts: CaptureOptions): Promise<CaptureResult> {
         'audio',
       );
     }
+    const labels = (await listInputs()).map((d) => d.label).filter(Boolean);
     throw new CaptureError(
       '没有找到可用的系统音频来源。\n' +
-        'Linux：请在 PulseAudio / PipeWire 中启用输出设备的 Monitor（pavucontrol → 录音），然后重试。',
+        (nativeError ? `原因：${nativeError}\n` : '') +
+        'Linux：需要 PulseAudio 或 PipeWire（命令 parec 或 pw-record 可用）。\n' +
+        `检测到的输入设备：${labels.length ? labels.join('、') : '无'}`,
       'audio',
     );
   }

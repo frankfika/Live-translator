@@ -305,7 +305,7 @@ const LanguageSettings: React.FC<Props> = ({ settings, onSave, embedded, isOpen 
         <p className="text-gray-500">更早的 macOS：安装免费的 <a className="text-sky-400 underline" href="https://existential.audio/blackhole/" target="_blank" rel="noopener">BlackHole</a>，把会议软件的扬声器设为 BlackHole（或在「音频 MIDI 设置」建多输出设备，这样自己也能听到），本应用会自动识别。{loopbackDevice && <span className="text-emerald-400"> 已检测到：{loopbackDevice.label}</span>}</p>
       </>
     ) : (
-      <p>Linux：使用 PulseAudio / PipeWire 的「Monitor of …」设备录制电脑声音。{loopbackDevice ? <span className="text-emerald-400"> 已检测到：{loopbackDevice.label}</span> : ' 未检测到，请在 pavucontrol 中启用。'}</p>
+      <p>Linux：通过 PulseAudio / PipeWire 直接录制默认扬声器的声音（需要系统里有 parec 或 pw-record 命令，绝大多数桌面发行版自带）。</p>
     )
   ) : (
     <>

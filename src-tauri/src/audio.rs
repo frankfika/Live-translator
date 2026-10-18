@@ -4,13 +4,13 @@
 //! Windows WebView2 的屏幕共享弹窗体验差且经常拿不到音轨。这里直接用 cpal：
 //! - Windows：在默认输出设备上建输入流 = WASAPI loopback
 //! - macOS 14.6+：cpal 会自动创建 Core Audio process tap 聚合设备
-//! - Linux：ALSA 的 default 设备双向可用，建输入流会录到麦克风而不是回环，
-//!   所以不在这里做；前端改用 PulseAudio/PipeWire 的 "Monitor of …" 输入设备。
+//! - Linux：ALSA 的 default 设备双向可用，用 cpal 建输入流会录到麦克风而不是回环；
+//!   改为调用 parec / pw-record 录默认输出的 monitor（见 run_capture 的 Linux 实现）。
 //!
 //! 采到的音频在 Rust 侧混成单声道、降采样到 16kHz，每 50ms 通过 IPC Channel
 //! 以原始 f32 LE 字节推给前端，前端直接喂给 VAD。
 
-#![cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
+#![cfg_attr(not(any(target_os = "windows", target_os = "macos", target_os = "linux")), allow(dead_code))]
 
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -36,6 +36,7 @@ pub struct SystemAudioInfo {
 }
 
 /// 一阶低通 + 线性插值的轻量降采样器，对语音识别足够。
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 struct Downsampler {
     step: f64,
     pos: f64,
@@ -44,6 +45,7 @@ struct Downsampler {
     alpha: f32,
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 impl Downsampler {
     fn new(src_rate: u32) -> Self {
         let cutoff = 7_000f32.min(src_rate as f32 * 0.45);
@@ -152,7 +154,109 @@ fn run_capture(
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+/// Linux：WebKitGTK（GStreamer）不会把 PulseAudio 的 Monitor 设备暴露给网页，
+/// getUserMedia 拿不到"电脑声音"。这里直接调用系统自带的录音工具录默认输出的 monitor：
+/// PulseAudio 的 `parec`，或 PipeWire 的 `pw-record`。输出 16k 单声道 f32，不需要额外编译依赖。
+#[cfg(target_os = "linux")]
+fn linux_recorder() -> Option<(&'static str, Vec<&'static str>)> {
+    let candidates: [(&str, Vec<&str>); 2] = [
+        (
+            "parec",
+            vec![
+                "--device=@DEFAULT_MONITOR@",
+                "--format=float32le",
+                "--rate=16000",
+                "--channels=1",
+                "--latency-msec=50",
+                "--client-name=ai-interpreter",
+            ],
+        ),
+        (
+            "pw-record",
+            vec![
+                "-P",
+                "{ stream.capture.sink=true }",
+                "--format=f32",
+                "--rate=16000",
+                "--channels=1",
+                "-",
+            ],
+        ),
+    ];
+    candidates.into_iter().find(|(bin, _)| which(bin))
+}
+
+#[cfg(target_os = "linux")]
+fn which(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn run_capture(
+    channel: Channel<InvokeResponseBody>,
+    ready: mpsc::Sender<Result<SystemAudioInfo, String>>,
+    stop_rx: mpsc::Receiver<()>,
+) {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let Some((bin, args)) = linux_recorder() else {
+        let _ = ready.send(Err("没有找到 parec 或 pw-record（请安装 pulseaudio-utils 或 pipewire）".into()));
+        return;
+    };
+    let mut child = match Command::new(bin)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = ready.send(Err(format!("启动 {bin} 失败: {e}")));
+            return;
+        }
+    };
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    // 先读到第一块数据再报告成功：录音工具连不上音频服务时会立刻退出
+    let mut buf = vec![0u8; CHUNK_SAMPLES * 4];
+    let first = stdout.read_exact(&mut buf);
+    if first.is_err() {
+        let mut err = String::new();
+        if let Some(mut e) = child.stderr.take() {
+            let _ = e.read_to_string(&mut err);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let msg = err.lines().next().unwrap_or("没有输出").to_string();
+        let _ = ready.send(Err(format!("{bin} 无法录制电脑声音：{msg}")));
+        return;
+    }
+    let _ = ready.send(Ok(SystemAudioInfo {
+        sample_rate: TARGET_RATE,
+        device: if bin == "parec" { "PulseAudio Monitor".into() } else { "PipeWire Monitor".into() },
+    }));
+    let _ = channel.send(InvokeResponseBody::Raw(buf.clone()));
+
+    // 读线程：持续推数据；主循环等 stop 信号后杀掉子进程，读线程随 EOF 退出
+    let reader = thread::spawn(move || {
+        let mut buf = vec![0u8; CHUNK_SAMPLES * 4];
+        while stdout.read_exact(&mut buf).is_ok() {
+            if channel.send(InvokeResponseBody::Raw(buf.clone())).is_err() {
+                break;
+            }
+        }
+    });
+    let _ = stop_rx.recv();
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 fn run_capture(
     _channel: Channel<InvokeResponseBody>,
     ready: mpsc::Sender<Result<SystemAudioInfo, String>>,
@@ -172,6 +276,7 @@ fn macos_version() -> Option<(u32, u32)> {
     parse_version(&String::from_utf8_lossy(&out.stdout))
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn parse_version(s: &str) -> Option<(u32, u32)> {
     let mut it = s.trim().split('.');
     let major = it.next()?.parse().ok()?;
@@ -188,7 +293,11 @@ pub fn native_loopback_supported() -> bool {
     {
         macos_version().is_some_and(|v| v >= (14, 6))
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_recorder().is_some()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         false
     }

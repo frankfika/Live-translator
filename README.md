@@ -28,7 +28,7 @@
 | Windows | WASAPI 回环原生采集，腾讯会议 / Zoom / Teams / 飞书 / 浏览器都能直接翻 |
 | macOS 14.6+ | Core Audio 系统录音原生采集（首次需允许「录屏与系统录音」权限） |
 | 更早的 macOS | 自动识别 BlackHole 等虚拟声卡 |
-| Linux | 自动使用 PulseAudio / PipeWire 的 Monitor 设备 |
+| Linux | 通过 PulseAudio / PipeWire 直接录默认扬声器（parec / pw-record） |
 | 浏览器版 | 共享会议标签页音频；字幕用画中画小窗悬浮在所有窗口之上 |
 
 **噪音和准确度：**
