@@ -20,7 +20,8 @@ export async function nativeSystemAudioSupported(): Promise<boolean> {
   return supportedCache;
 }
 
-export async function startNativeSystemAudio(onPcm: (samples: Float32Array) => void): Promise<NativeAudioHandle> {
+/** microphone=true 仅 Linux：WebKitGTK 拿不到麦克风时用 parec / pw-record 录默认输入 */
+export async function startNativeSystemAudio(onPcm: (samples: Float32Array) => void, microphone = false): Promise<NativeAudioHandle> {
   const channel = new Channel<ArrayBuffer | number[]>();
   let active = true;
   channel.onmessage = (data) => {
@@ -29,7 +30,7 @@ export async function startNativeSystemAudio(onPcm: (samples: Float32Array) => v
     const buf = data instanceof ArrayBuffer ? data : new Uint8Array(data as number[]).buffer;
     onPcm(new Float32Array(buf));
   };
-  const info = await invoke<{ sampleRate: number; device: string }>('start_system_audio', { onAudio: channel });
+  const info = await invoke<{ sampleRate: number; device: string }>('start_system_audio', { onAudio: channel, microphone });
   return {
     sampleRate: info.sampleRate,
     device: info.device,

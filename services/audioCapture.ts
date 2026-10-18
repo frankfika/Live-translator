@@ -30,6 +30,7 @@ export interface CaptureOptions {
 }
 
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent);
+const IS_LINUX = typeof navigator !== 'undefined' && /Linux/i.test(navigator.platform || navigator.userAgent) && !/Android/i.test(navigator.userAgent);
 const IS_WINDOWS = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || navigator.userAgent);
 
 export class CaptureError extends Error {
@@ -70,6 +71,30 @@ function rawConstraints(deviceId?: string): MediaTrackConstraints {
 }
 
 async function acquireMicrophone(opts: CaptureOptions): Promise<CaptureResult> {
+  // Linux 桌面端：WebKitGTK 的 getUserMedia 经常拿不到任何设备（或直接报 Invalid constraint），
+  // 选的是"系统默认"时直接走原生录音
+  let nativeError = '';
+  if (isTauriApp() && IS_LINUX && !opts.deviceId) {
+    try {
+      const { startNativeSystemAudio } = await import('./nativeAudio');
+      const handle = await startNativeSystemAudio(opts.onPcm, true);
+      return { kind: 'pcm', sampleRate: handle.sampleRate, label: handle.device, stop: handle.stop };
+    } catch (err) {
+      nativeError = err instanceof Error ? err.message : String(err);
+      console.warn('[audio] native mic failed, falling back to getUserMedia:', nativeError);
+    }
+  }
+  try {
+    return await acquireMicrophoneWeb(opts);
+  } catch (err) {
+    if (nativeError && err instanceof CaptureError) {
+      throw new CaptureError(`${err.message}\n（原生录音也失败：${nativeError}）`, 'audio');
+    }
+    throw err;
+  }
+}
+
+async function acquireMicrophoneWeb(opts: CaptureOptions): Promise<CaptureResult> {
   let label = '麦克风';
   let processing = opts.echoCancellation;
   if (opts.deviceId) {
@@ -82,11 +107,11 @@ async function acquireMicrophone(opts: CaptureOptions): Promise<CaptureResult> {
     : rawConstraints(opts.deviceId);
   let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+    stream = await getUserMediaWithFallback(constraints, opts.deviceId);
   } catch (err) {
     // 之前选中的设备被拔了：退回系统默认设备，而不是直接失败
     if (opts.deviceId && err instanceof DOMException && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError')) {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: buildMicrophoneConstraints(undefined, { echoCancellation: opts.echoCancellation, noiseSuppression: opts.echoCancellation, autoGainControl: opts.echoCancellation }) });
+      stream = await getUserMediaWithFallback(buildMicrophoneConstraints(undefined, { echoCancellation: opts.echoCancellation, noiseSuppression: opts.echoCancellation, autoGainControl: opts.echoCancellation }));
       label = '系统默认麦克风';
     } else {
       throw new CaptureError(formatMediaError(err, '麦克风访问失败'), 'audio');
@@ -95,6 +120,23 @@ async function acquireMicrophone(opts: CaptureOptions): Promise<CaptureResult> {
   if (!opts.deviceId) label = stream.getAudioTracks()[0]?.label || '系统默认麦克风';
   watchEnded(stream, opts.onEnded, '音频设备已断开（可能被拔出或被其他应用占用）');
   return { kind: 'stream', stream, label, stop: () => stream.getTracks().forEach((t) => t.stop()) };
+}
+
+/**
+ * 部分 WebView（WebKitGTK 等）不认识 echoCancellation / channelCount 之类的约束，
+ * 直接抛 "Invalid constraint"（TypeError）。这时退回最简单的 { audio: true }（或只带 deviceId）。
+ */
+async function getUserMediaWithFallback(constraints: MediaTrackConstraints, deviceId?: string): Promise<MediaStream> {
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio: constraints });
+  } catch (err) {
+    const name = (err as Error)?.name;
+    const msg = (err as Error)?.message || '';
+    if (name === 'TypeError' || (/constraint/i.test(msg) && name !== 'OverconstrainedError')) {
+      return navigator.mediaDevices.getUserMedia({ audio: deviceId ? { deviceId } : true });
+    }
+    throw err;
+  }
 }
 
 async function acquireSystem(opts: CaptureOptions): Promise<CaptureResult> {
@@ -115,7 +157,7 @@ async function acquireSystem(opts: CaptureOptions): Promise<CaptureResult> {
     // 2) 回环类输入设备
     const loop = await findLoopbackInput();
     if (loop) {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: rawConstraints(loop.deviceId) }).catch((err) => {
+      const stream = await getUserMediaWithFallback(rawConstraints(loop.deviceId), loop.deviceId).catch((err) => {
         throw new CaptureError(formatMediaError(err, '无法打开回环设备'), 'audio');
       });
       watchEnded(stream, opts.onEnded, '回环音频设备已断开');

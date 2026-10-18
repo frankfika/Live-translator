@@ -75,6 +75,7 @@ fn run_capture(
     channel: Channel<InvokeResponseBody>,
     ready: mpsc::Sender<Result<SystemAudioInfo, String>>,
     stop_rx: mpsc::Receiver<()>,
+    _mic: bool,
 ) {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{FromSample, SampleFormat, SizedSample};
@@ -157,13 +158,20 @@ fn run_capture(
 /// Linux：WebKitGTK（GStreamer）不会把 PulseAudio 的 Monitor 设备暴露给网页，
 /// getUserMedia 拿不到"电脑声音"。这里直接调用系统自带的录音工具录默认输出的 monitor：
 /// PulseAudio 的 `parec`，或 PipeWire 的 `pw-record`。输出 16k 单声道 f32，不需要额外编译依赖。
+/// `mic = true` 录默认输入设备（麦克风）；false 录默认输出的 monitor（电脑声音）。
+/// WebKitGTK 的 getUserMedia 在很多发行版上拿不到任何设备，所以 Linux 上麦克风也走这里。
 #[cfg(target_os = "linux")]
-fn linux_recorder() -> Option<(&'static str, Vec<&'static str>)> {
+fn linux_recorder(mic: bool) -> Option<(&'static str, Vec<&'static str>)> {
+    let parec_dev = if mic { "--device=@DEFAULT_SOURCE@" } else { "--device=@DEFAULT_MONITOR@" };
+    let mut pw = vec!["--format=f32", "--rate=16000", "--channels=1", "-"];
+    if !mic {
+        pw.splice(0..0, ["-P", "{ stream.capture.sink=true }"]);
+    }
     let candidates: [(&str, Vec<&str>); 2] = [
         (
             "parec",
             vec![
-                "--device=@DEFAULT_MONITOR@",
+                parec_dev,
                 "--format=float32le",
                 "--rate=16000",
                 "--channels=1",
@@ -171,17 +179,7 @@ fn linux_recorder() -> Option<(&'static str, Vec<&'static str>)> {
                 "--client-name=ai-interpreter",
             ],
         ),
-        (
-            "pw-record",
-            vec![
-                "-P",
-                "{ stream.capture.sink=true }",
-                "--format=f32",
-                "--rate=16000",
-                "--channels=1",
-                "-",
-            ],
-        ),
+        ("pw-record", pw),
     ];
     candidates.into_iter().find(|(bin, _)| which(bin))
 }
@@ -198,11 +196,12 @@ fn run_capture(
     channel: Channel<InvokeResponseBody>,
     ready: mpsc::Sender<Result<SystemAudioInfo, String>>,
     stop_rx: mpsc::Receiver<()>,
+    mic: bool,
 ) {
     use std::io::Read;
     use std::process::{Command, Stdio};
 
-    let Some((bin, args)) = linux_recorder() else {
+    let Some((bin, args)) = linux_recorder(mic) else {
         let _ = ready.send(Err("没有找到 parec 或 pw-record（请安装 pulseaudio-utils 或 pipewire）".into()));
         return;
     };
@@ -237,7 +236,11 @@ fn run_capture(
     }
     let _ = ready.send(Ok(SystemAudioInfo {
         sample_rate: TARGET_RATE,
-        device: if bin == "parec" { "PulseAudio Monitor".into() } else { "PipeWire Monitor".into() },
+        device: match (mic, bin) {
+            (true, _) => "系统默认麦克风".into(),
+            (false, "parec") => "PulseAudio Monitor".into(),
+            _ => "PipeWire Monitor".into(),
+        },
     }));
     let _ = channel.send(InvokeResponseBody::Raw(buf.clone()));
 
@@ -261,6 +264,7 @@ fn run_capture(
     _channel: Channel<InvokeResponseBody>,
     ready: mpsc::Sender<Result<SystemAudioInfo, String>>,
     _stop_rx: mpsc::Receiver<()>,
+    _mic: bool,
 ) {
     let _ = ready.send(Err("unsupported".into()));
 }
@@ -295,7 +299,7 @@ pub fn native_loopback_supported() -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        linux_recorder().is_some()
+        linux_recorder(false).is_some()
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
@@ -312,8 +316,14 @@ pub fn system_audio_supported() -> bool {
 pub fn start_system_audio(
     state: State<'_, SystemAudioState>,
     on_audio: Channel<InvokeResponseBody>,
+    microphone: Option<bool>,
 ) -> Result<SystemAudioInfo, String> {
-    if !native_loopback_supported() {
+    let mic = microphone.unwrap_or(false);
+    if mic && !cfg!(target_os = "linux") {
+        // Windows / macOS 的 WebView 麦克风采集没问题，只有 Linux 需要原生兜底
+        return Err("原生麦克风采集仅用于 Linux".into());
+    }
+    if !mic && !native_loopback_supported() {
         return Err("当前系统不支持原生录制电脑声音".into());
     }
     stop_inner(&state);
@@ -321,7 +331,7 @@ pub fn start_system_audio(
     let (ready_tx, ready_rx) = mpsc::channel();
     thread::Builder::new()
         .name("system-audio".into())
-        .spawn(move || run_capture(on_audio, ready_tx, stop_rx))
+        .spawn(move || run_capture(on_audio, ready_tx, stop_rx, mic))
         .map_err(|e| e.to_string())?;
     let info = ready_rx
         .recv_timeout(std::time::Duration::from_secs(8))

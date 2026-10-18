@@ -157,6 +157,9 @@ export function normalizeAudioInputDevices(devices: MediaDeviceInfo[]): AudioInp
 }
 
 export function formatMediaError(error: unknown, fallback: string): string {
+  if (error instanceof Error && /invalid constraint/i.test(error.message)) {
+    return '当前系统不支持所选的录音参数，且没有找到可用的麦克风。\n请检查系统是否有输入设备，或在设置里换一个输入设备。';
+  }
   if (!(error instanceof DOMException)) {
     return error instanceof Error && error.message ? error.message : fallback;
   }
