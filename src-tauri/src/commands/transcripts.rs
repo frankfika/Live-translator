@@ -18,6 +18,15 @@ pub async fn save_transcript(
 
     let now = chrono::Utc::now().timestamp();
 
+    // transcripts.session_id 有外键约束（foreign_keys = ON），会话行不存在时插入会失败。
+    // 前端不单独建会话，这里第一次保存时顺手建上。
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, lang_a, lang_b, audio_source, started_at)
+         VALUES (?1, ?2, ?3, '', ?4)",
+        params![session_id, source_lang, target_lang, now],
+    )
+    .map_err(|e| e.to_string())?;
+
     conn.execute(
         "INSERT INTO transcripts (session_id, original_text, translated_text, source_lang, target_lang, timestamp, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",

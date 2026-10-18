@@ -19,8 +19,10 @@ function fakeProvider(asr: string[], translate: (req: TranslateRequest) => Promi
 
 function speak(session: LiveSession, ms: number, amp: number) {
   for (let t = 0; t < ms; t += (FRAME / RATE) * 1000) {
+    // 人声有 ~4Hz 的音节起伏；纯稳态信号会被 VAD 当成风扇噪声
+    const env = 0.15 + 0.85 * Math.abs(Math.sin(2 * Math.PI * 4 * (t / 1000)));
     const f = new Float32Array(FRAME);
-    for (let i = 0; i < FRAME; i++) f[i] = amp ? Math.sin(i * 0.3) * amp : (Math.random() - 0.5) * 0.002;
+    for (let i = 0; i < FRAME; i++) f[i] = amp ? Math.sin(i * 0.3) * amp * env : (Math.random() - 0.5) * 0.002;
     session.feed(f);
   }
 }

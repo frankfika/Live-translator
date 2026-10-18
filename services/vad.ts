@@ -43,6 +43,10 @@ const PROFILES: Record<NonNullable<VadOptions['sensitivity']>, Profile> = {
 };
 
 const PRE_ROLL_MS = 300;
+/** 稳态噪声判定：连续这么久"一直很响且几乎不起伏"就当成风扇 / 空调 / 底噪 */
+const STEADY_WINDOW_MS = 1500;
+/** 人声有音节起伏，帧能量的标准差通常 > 5dB；风扇、白噪声只有 1~2dB */
+const STEADY_MAX_STD_DB = 2.5;
 const HANGOVER_MS = 700;
 const SOFT_MAX_MS = 12000;
 const HARD_MAX_MS = 20000;
@@ -113,6 +117,10 @@ export class AdaptiveVad {
     }
 
     const durMs = (this.segmentLen / this.sampleRate) * 1000;
+    if (this.silenceMs === 0 && this.isSteadyNoise(frameMs)) {
+      this.rejectAsNoise();
+      return;
+    }
     if (this.silenceMs >= HANGOVER_MS) {
       this.finishSegment();
     } else if (durMs >= HARD_MAX_MS) {
@@ -123,6 +131,40 @@ export class AdaptiveVad {
     } else if (durMs >= SOFT_MAX_MS + 3000) {
       this.splitAtQuietest();
     }
+  }
+
+  /**
+   * 突然出现的稳态噪声（开风扇、空调、换了个吵的环境）：起始时比噪声底响，会被当成说话，
+   * 而且因为一直"响"，噪声底永远不会更新。这里看最近 1.5s 帧能量的起伏，太平稳就判为噪声。
+   */
+  private isSteadyNoise(frameMs: number): boolean {
+    const n = Math.ceil(STEADY_WINDOW_MS / frameMs);
+    if (this.segmentRms.length < n) return false;
+    let sum = 0;
+    let sq = 0;
+    for (let i = this.segmentRms.length - n; i < this.segmentRms.length; i++) {
+      const db = 20 * Math.log10(Math.max(this.segmentRms[i], 1e-6));
+      sum += db;
+      sq += db * db;
+    }
+    const mean = sum / n;
+    const std = Math.sqrt(Math.max(0, sq / n - mean * mean));
+    return std < STEADY_MAX_STD_DB;
+  }
+
+  /** 丢弃当前段，并把噪声底直接抬到当前噪声水平 */
+  private rejectAsNoise() {
+    const recent = this.segmentRms.slice(-10);
+    const level = recent.reduce((a, b) => a + b, 0) / recent.length;
+    this.noiseFloor = Math.min(Math.max(level, this.noiseFloor), 0.2);
+    this.speaking = false;
+    this.segment = [];
+    this.segmentLen = 0;
+    this.segmentRms = [];
+    this.silenceMs = 0;
+    this.voicedMs = 0;
+    this.aboveCount = 0;
+    this.onDiscard?.();
   }
 
   /** 强制把当前段吐出（停止时调用） */
@@ -154,7 +196,7 @@ export class AdaptiveVad {
     if (loud) return;
     const alpha = rms > this.noiseFloor ? 0.02 : 0.15;
     this.noiseFloor = this.noiseFloor * (1 - alpha) + rms * alpha;
-    this.noiseFloor = Math.min(Math.max(this.noiseFloor, 0.0005), 0.08);
+    this.noiseFloor = Math.min(Math.max(this.noiseFloor, 0.0005), 0.2);
   }
 
   private pushPreRoll(frame: Float32Array) {

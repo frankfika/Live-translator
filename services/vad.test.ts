@@ -14,6 +14,13 @@ function tone(amp: number): Float32Array {
   for (let i = 0; i < FRAME; i++) f[i] = Math.sin(i * 0.2) * amp;
   return f;
 }
+/** 像人声一样有 ~4Hz 音节起伏的信号 */
+let syllableT = 0;
+function speech(amp: number): Float32Array {
+  syllableT += FRAME / RATE;
+  const env = 0.15 + 0.85 * Math.abs(Math.sin(2 * Math.PI * 4 * syllableT));
+  return tone(amp * env);
+}
 function run(vad: AdaptiveVad, frame: () => Float32Array, ms: number) {
   for (let t = 0; t < ms; t += (FRAME / RATE) * 1000) vad.process(frame());
 }
@@ -33,7 +40,7 @@ describe('AdaptiveVad', () => {
   it('emits one segment for a sentence followed by silence', () => {
     const t = setup();
     run(t.vad, () => noise(0.002), 1000);
-    run(t.vad, () => tone(0.2), 1500);
+    run(t.vad, () => speech(0.2), 1500);
     run(t.vad, () => noise(0.002), 1200);
     expect(t.segments).toHaveLength(1);
     // 包含预录：长度应 > 纯说话部分
@@ -43,9 +50,9 @@ describe('AdaptiveVad', () => {
   it('does not split on a short breathing pause', () => {
     const t = setup();
     run(t.vad, () => noise(0.002), 800);
-    run(t.vad, () => tone(0.2), 1000);
+    run(t.vad, () => speech(0.2), 1000);
     run(t.vad, () => noise(0.002), 400); // 正常换气
-    run(t.vad, () => tone(0.2), 1000);
+    run(t.vad, () => speech(0.2), 1000);
     run(t.vad, () => noise(0.002), 1200);
     expect(t.segments).toHaveLength(1);
   });
@@ -56,7 +63,7 @@ describe('AdaptiveVad', () => {
     run(t.vad, () => noise(0.03), 5000);
     expect(t.segments).toHaveLength(0);
     // 底噪之上的人声仍然能检测到
-    run(t.vad, () => tone(0.35), 1500);
+    run(t.vad, () => speech(0.35), 1500);
     run(t.vad, () => noise(0.03), 1500);
     expect(t.segments).toHaveLength(1);
   });
@@ -69,10 +76,21 @@ describe('AdaptiveVad', () => {
     expect(t.segments).toHaveLength(0);
   });
 
+  it('rejects a fan / air-conditioner that suddenly turns on, then still hears speech over it', () => {
+    const t = setup();
+    run(t.vad, () => noise(0.002), 1500); // 安静
+    run(t.vad, () => noise(0.12), 5000); // 突然开风扇（稳态，比之前响得多）
+    expect(t.segments).toHaveLength(0);
+    expect(t.discards).toBeGreaterThanOrEqual(1);
+    run(t.vad, () => speech(0.6), 2000); // 风扇声里说话
+    run(t.vad, () => noise(0.12), 1500);
+    expect(t.segments).toHaveLength(1);
+  });
+
   it('cuts very long monologues so subtitles keep flowing', () => {
     const t = setup();
     run(t.vad, () => noise(0.002), 600);
-    run(t.vad, () => tone(0.2), 40000);
+    run(t.vad, () => speech(0.2), 40000);
     expect(t.segments.length).toBeGreaterThanOrEqual(2);
     for (const s of t.segments) expect(s.samples.length / RATE).toBeLessThanOrEqual(20.5);
   });
@@ -82,7 +100,7 @@ describe('AdaptiveVad', () => {
     const hi = setup('high');
     for (const t of [lo, hi]) {
       run(t.vad, () => noise(0.001), 800);
-      run(t.vad, () => tone(0.02), 1200);
+      run(t.vad, () => speech(0.02), 1200);
       run(t.vad, () => noise(0.001), 1200);
     }
     expect(lo.segments).toHaveLength(0);
