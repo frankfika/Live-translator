@@ -44,9 +44,13 @@ const PROFILES: Record<NonNullable<VadOptions['sensitivity']>, Profile> = {
 
 const PRE_ROLL_MS = 300;
 /** 稳态噪声判定：连续这么久"一直很响且几乎不起伏"就当成风扇 / 空调 / 底噪 */
-const STEADY_WINDOW_MS = 1500;
-/** 人声有音节起伏，帧能量的标准差通常 > 5dB；风扇、白噪声只有 1~2dB */
-const STEADY_MAX_STD_DB = 2.5;
+const STEADY_WINDOW_MS = 2500;
+/**
+ * 帧能量（50ms）在窗口内的标准差。实测（真实音频，2.5s 窗口）：
+ *   纯风扇 1.2~1.5dB；风扇声里说话 2.8~3.6dB；安静环境说话 8~27dB。
+ * 阈值取 2.0：之前用 1.5s 窗口 + 2.5dB，"风扇里说话"最低到 2.6dB，偶尔会被误杀。
+ */
+const STEADY_MAX_STD_DB = 2.0;
 const HANGOVER_MS = 700;
 const SOFT_MAX_MS = 12000;
 const HARD_MAX_MS = 20000;

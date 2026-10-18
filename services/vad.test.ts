@@ -87,6 +87,26 @@ describe('AdaptiveVad', () => {
     expect(t.segments).toHaveLength(1);
   });
 
+  it('does not mistake speech with shallow modulation over a loud fan for steady noise', () => {
+    // 回归：风扇声里说话时音节起伏被底噪"填平"，能量起伏只有 ~3dB，之前偶尔被当成噪声丢掉
+    const t = setup();
+    run(t.vad, () => noise(0.002), 1500);
+    let k = 0;
+    const flatSpeech = () => {
+      k++;
+      // 参数按真实录音校准：风扇里说话的帧能量起伏约 3dB
+      const env = 0.15 + 0.85 * Math.abs(Math.sin(2 * Math.PI * 3 * (k * FRAME / RATE)));
+      const f = noise(0.1);
+      const s = tone(0.25 * env);
+      for (let i = 0; i < FRAME; i++) f[i] += s[i];
+      return f;
+    };
+    run(t.vad, flatSpeech, 6000);
+    run(t.vad, () => noise(0.002), 1500);
+    expect(t.discards).toBe(0);
+    expect(t.segments).toHaveLength(1);
+  });
+
   it('cuts very long monologues so subtitles keep flowing', () => {
     const t = setup();
     run(t.vad, () => noise(0.002), 600);
